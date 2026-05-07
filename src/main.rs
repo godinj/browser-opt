@@ -9,11 +9,11 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use db::{ArchivedTab, Db, SearchRow};
+use db::{ArchivedTab, CurrentTab, Db, SearchRow};
 
 #[derive(Parser)]
 #[command(
-    name = "bt",
+    name = "browser-opt",
     version,
     about = "Local-first Firefox tab archives and browser search"
 )]
@@ -66,6 +66,7 @@ struct FzfArgs {
 
 #[derive(Clone, ValueEnum)]
 enum FzfMode {
+    All,
     Pages,
     Archives,
 }
@@ -112,6 +113,7 @@ fn main() -> Result<()> {
         Commands::Fzf(args) => {
             let db = Db::open(&db_path)?;
             match args.mode {
+                FzfMode::All => fzf_all(&db, args.query.as_deref()),
                 FzfMode::Pages => fzf_pages(&db, args.query.as_deref()),
                 FzfMode::Archives => fzf_archives(&db, args.query.as_deref()),
             }
@@ -259,6 +261,37 @@ fn fzf_pages(db: &Db, query: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn fzf_all(db: &Db, query: Option<&str>) -> Result<()> {
+    let current_tabs = match query {
+        Some(query) => db.search_current_tabs(query, 200)?,
+        None => db.current_tabs(200)?,
+    };
+    let pages = match query {
+        Some(query) => db.search_pages(query, 200)?,
+        None => db.recent_pages(200)?,
+    };
+    let archived_tabs = match query {
+        Some(query) => db.search_archives(query, 200)?,
+        None => db.recent_archived_tabs(200)?,
+    };
+
+    let input = current_tabs
+        .iter()
+        .map(format_current_tab_fzf_row)
+        .chain(pages.iter().map(format_page_fzf_row))
+        .chain(archived_tabs.iter().map(format_archive_fzf_row))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let selected = run_fzf(&input)?;
+    if let Some(line) = selected {
+        if let Some(url) = line.split('\t').nth(3) {
+            firefox::open_urls([url.to_string()])?;
+        }
+    }
+    Ok(())
+}
+
 fn fzf_archives(db: &Db, query: Option<&str>) -> Result<()> {
     let rows = match query {
         Some(query) => db.search_archives(query, 200)?,
@@ -284,6 +317,42 @@ fn fzf_archives(db: &Db, query: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn format_current_tab_fzf_row(row: &CurrentTab) -> String {
+    let flags = match (row.active, row.pinned) {
+        (true, true) => "active,pinned",
+        (true, false) => "active",
+        (false, true) => "pinned",
+        (false, false) => "",
+    };
+    format!(
+        "current\t{}\t{}\t{}\t{}",
+        row.updated_at,
+        row.title.as_deref().unwrap_or(""),
+        row.url,
+        flags
+    )
+}
+
+fn format_page_fzf_row(row: &SearchRow) -> String {
+    format!(
+        "visited\t{}\t{}\t{}\t{}",
+        row.visited_at,
+        row.title.as_deref().unwrap_or(""),
+        row.url,
+        row.source_url.as_deref().unwrap_or("")
+    )
+}
+
+fn format_archive_fzf_row(row: &ArchivedTab) -> String {
+    format!(
+        "archived\t{}\t{}\t{}\t{}",
+        row.archive_date,
+        row.title.as_deref().unwrap_or(""),
+        row.url,
+        row.captured_at
+    )
 }
 
 fn run_fzf(input: &str) -> Result<Option<String>> {

@@ -29,6 +29,15 @@ pub struct ArchivedTab {
     pub captured_at: String,
 }
 
+#[derive(Debug)]
+pub struct CurrentTab {
+    pub url: String,
+    pub title: Option<String>,
+    pub updated_at: String,
+    pub active: bool,
+    pub pinned: bool,
+}
+
 pub struct ArchiveSummary {
     pub date: String,
     pub tab_count: i64,
@@ -218,6 +227,28 @@ impl Db {
             "SELECT url, title, visited_at, source_url FROM page_visit ORDER BY visited_at DESC LIMIT ?1",
         )?;
         collect_search_rows(&mut stmt, params![limit as i64])
+    }
+
+    pub fn search_current_tabs(&self, query: &str, limit: usize) -> Result<Vec<CurrentTab>> {
+        let pattern = format!("%{query}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT url, title, updated_at, active, pinned
+             FROM current_tab
+             WHERE url LIKE ?1 OR title LIKE ?1
+             ORDER BY active DESC, pinned DESC, updated_at DESC
+             LIMIT ?2",
+        )?;
+        collect_current_tabs(&mut stmt, params![pattern, limit as i64])
+    }
+
+    pub fn current_tabs(&self, limit: usize) -> Result<Vec<CurrentTab>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT url, title, updated_at, active, pinned
+             FROM current_tab
+             ORDER BY active DESC, pinned DESC, updated_at DESC
+             LIMIT ?1",
+        )?;
+        collect_current_tabs(&mut stmt, params![limit as i64])
     }
 
     pub fn create_archive_for_date(&self, date: NaiveDate) -> Result<ArchiveSummary> {
@@ -461,6 +492,23 @@ where
             url: row.get(1)?,
             title: row.get(2)?,
             captured_at: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+fn collect_current_tabs<P>(stmt: &mut rusqlite::Statement<'_>, params: P) -> Result<Vec<CurrentTab>>
+where
+    P: rusqlite::Params,
+{
+    let rows = stmt.query_map(params, |row| {
+        Ok(CurrentTab {
+            url: row.get(0)?,
+            title: row.get(1)?,
+            updated_at: row.get(2)?,
+            active: row.get::<_, i64>(3)? != 0,
+            pinned: row.get::<_, i64>(4)? != 0,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()

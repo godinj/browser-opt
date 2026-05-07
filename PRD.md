@@ -42,40 +42,40 @@ A power user who lives in Firefox, uses the terminal heavily, and wants browser 
 Daily archive:
 
 ```bash
-bt archive today
-bt archive yesterday
-bt archive list
-bt archive open 2026-05-07
+browser-opt archive today
+browser-opt archive yesterday
+browser-opt archive list
+browser-opt archive open 2026-05-07
 ```
 
 Search visited pages:
 
 ```bash
-bt search "sqlite fts firefox"
-bt fzf pages
+browser-opt search "sqlite fts firefox"
+browser-opt fzf pages
 ```
 
 Search archives:
 
 ```bash
-bt fzf archives
-bt archive open 2026-05-07
+browser-opt fzf archives
+browser-opt archive open 2026-05-07
 ```
 
 Recurring tabs:
 
 ```bash
-bt recurring create work
-bt recurring add work https://github.com
-bt recurring add work https://calendar.google.com
-bt recurring open work
+browser-opt recurring create work
+browser-opt recurring add work https://github.com
+browser-opt recurring add work https://calendar.google.com
+browser-opt recurring open work
 ```
 
 Export/import:
 
 ```bash
-bt export ./browser-opt-export.sqlite
-bt import ./browser-opt-export.sqlite
+browser-opt export ./browser-opt-export.sqlite
+browser-opt import ./browser-opt-export.sqlite
 ```
 
 ## Data Model Concepts
@@ -145,8 +145,9 @@ Firefox
 - Open tabs are captured into SQLite.
 - Visited pages are captured with URL, title, timestamp, and optional source URL.
 - A daily archive can be listed and reopened.
-- `bt fzf pages` lets the user fuzzy-search visited pages and open a selected URL.
-- `bt fzf archives` lets the user fuzzy-search daily archives or archived tabs.
+- `browser-opt fzf pages` lets the user fuzzy-search visited pages and open a selected URL.
+- `browser-opt fzf archives` lets the user fuzzy-search daily archives or archived tabs.
+- `browser-opt fzf all` lets the user fuzzy-search current tabs, visited pages, and archived tabs together.
 - User can create a named recurring set and open it from CLI.
 - Opening a recurring set does not duplicate URLs already open in Firefox.
 - Data remains local unless the user explicitly exports it.
@@ -154,7 +155,7 @@ Firefox
 ## Open Questions
 
 - Should archives restore into the current window or a new window?
-- Should the CLI binary be named `bt`, `tabs`, `bopt`, or something else?
+- Should the CLI also provide a short alias such as `bopt`?
 - Should closed tabs be tracked as first-class archive entries, or only visits/open snapshots?
 - Should private browsing be ignored entirely by default?
 - Should export produce raw SQLite, JSONL, or both?

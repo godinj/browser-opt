@@ -4,7 +4,7 @@ Browser Opt is a local-first Firefox tab archive and browser-search prototype.
 
 It includes:
 
-- `bt`, a Rust CLI and Firefox native messaging host.
+- `browser-opt`, a Rust CLI and Firefox native messaging host.
 - A SQLite datastore with FTS5 search.
 - A Firefox extension that captures tab snapshots, navigation events, and best-effort link-click source hints.
 - Manual recurring tab sets opened from the CLI.
@@ -18,7 +18,7 @@ cargo build --release
 ## Install Native Host
 
 ```bash
-./install/install-native-host.sh ./target/release/bt
+./install/install-native-host.sh ./target/release/browser-opt
 ```
 
 The installer writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS.
@@ -32,16 +32,17 @@ The installer writes the Firefox native messaging manifest to the per-user Mozil
 ## CLI Examples
 
 ```bash
-bt doctor
-bt search "sqlite firefox"
-bt fzf pages
-bt archive today
-bt archive list
-bt archive show 2026-05-07
-bt archive open 2026-05-07
-bt recurring create work
-bt recurring add work https://github.com
-bt recurring open work
+browser-opt doctor
+browser-opt search "sqlite firefox"
+browser-opt fzf all
+browser-opt fzf pages
+browser-opt archive today
+browser-opt archive list
+browser-opt archive show 2026-05-07
+browser-opt archive open 2026-05-07
+browser-opt recurring create work
+browser-opt recurring add work https://github.com
+browser-opt recurring open work
 ```
 
 Use `--db ./dev.sqlite` with any command to work against a development database.

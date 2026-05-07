@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -gt 1 ]]; then
-  echo "usage: $0 [path-to-bt]" >&2
+  echo "usage: $0 [path-to-browser-opt]" >&2
   exit 1
 fi
 
-BT_PATH="${1:-$(pwd)/target/release/bt}"
-if [[ ! -x "$BT_PATH" ]]; then
-  echo "bt executable not found or not executable: $BT_PATH" >&2
+BROWSER_OPT_PATH="${1:-$(pwd)/target/release/browser-opt}"
+if [[ ! -x "$BROWSER_OPT_PATH" ]]; then
+  echo "browser-opt executable not found or not executable: $BROWSER_OPT_PATH" >&2
   echo "run: cargo build --release" >&2
   exit 1
 fi
@@ -30,7 +30,7 @@ mkdir -p "$HOST_DIR"
 WRAPPER_PATH="$HOST_DIR/browser_opt_host"
 cat > "$WRAPPER_PATH" <<EOF
 #!/usr/bin/env bash
-exec "$BT_PATH" native-host
+exec "$BROWSER_OPT_PATH" native-host
 EOF
 chmod +x "$WRAPPER_PATH"
 sed "s#__BT_PATH__#$WRAPPER_PATH#g" "$(dirname "$0")/browser_opt.json.in" > "$HOST_DIR/browser_opt.json"
