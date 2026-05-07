@@ -12,6 +12,10 @@
   "background": {
     "scripts": ["src/background.js"]
   },
+  "browser_action": {
+    "default_title": "Browser Opt",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
@@ -21,6 +25,7 @@
   ],
   "permissions": [
     "nativeMessaging",
+    "notifications",
     "tabs",
     "webNavigation",
     "storage",

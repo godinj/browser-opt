@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body {
+        box-sizing: border-box;
+        min-width: 260px;
+        margin: 0;
+        padding: 12px;
+        font: 13px system-ui, sans-serif;
+        color: #1f2328;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 14px;
+      }
+
+      button {
+        display: block;
+        width: 100%;
+        margin: 8px 0;
+        padding: 8px 10px;
+        border: 1px solid #8c959f;
+        border-radius: 6px;
+        background: #f6f8fa;
+        color: #1f2328;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #eef1f4;
+      }
+
+      #status {
+        min-height: 18px;
+        margin-top: 10px;
+        color: #57606a;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Browser Opt</h1>
+    <button id="group">Group tabs by last accessed date</button>
+    <button id="cleanup">Move date groups out, delete category folders</button>
+    <button id="sort">Merge and sort date folders</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

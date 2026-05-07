@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use chrono::{Local, TimeZone, Utc};
 use serde_json::{Value, json};
 
 use crate::db::{Db, IncomingTab, IncomingVisit};
@@ -16,12 +19,16 @@ pub fn run(db_path: &Path) -> Result<()> {
     let mut output = stdout.lock();
 
     while let Some(message) = read_message(&mut input)? {
+        let request_id = message.get("requestId").cloned();
         let result = handle_message(&db, message);
         match result {
-            Ok(()) => write_message(&mut output, &json!({ "v": 1, "type": "ack", "ok": true }))?,
+            Ok(payload) => write_message(
+                &mut output,
+                &json!({ "v": 1, "type": "ack", "ok": true, "requestId": request_id, "payload": payload }),
+            )?,
             Err(error) => write_message(
                 &mut output,
-                &json!({ "v": 1, "type": "error", "ok": false, "message": error.to_string() }),
+                &json!({ "v": 1, "type": "error", "ok": false, "requestId": request_id, "message": error.to_string() }),
             )?,
         }
     }
@@ -29,7 +36,7 @@ pub fn run(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn handle_message(db: &Db, message: Value) -> Result<()> {
+fn handle_message(db: &Db, message: Value) -> Result<Value> {
     let message_type = message
         .get("type")
         .and_then(Value::as_str)
@@ -37,10 +44,11 @@ fn handle_message(db: &Db, message: Value) -> Result<()> {
     let payload = message.get("payload").unwrap_or(&message);
 
     match message_type {
-        "hello" | "heartbeat" => Ok(()),
+        "hello" | "heartbeat" => Ok(json!(null)),
         "visit" | "navigation_event" => {
             let visit: IncomingVisit = serde_json::from_value(payload.clone())?;
-            db.insert_visit(&visit)
+            db.insert_visit(&visit)?;
+            Ok(json!(null))
         }
         "tab_snapshot" | "tabs_snapshot" => {
             let tabs = payload.get("tabs").cloned().context("missing tabs")?;
@@ -53,11 +61,162 @@ fn handle_message(db: &Db, message: Value) -> Result<()> {
                 .get("reason")
                 .and_then(Value::as_str)
                 .unwrap_or("native-message");
-            db.replace_current_tabs(&tabs, captured_at, reason)
+            db.replace_current_tabs(&tabs, captured_at, reason)?;
+            Ok(json!(null))
         }
-        "link_click_hint" => db.insert_link_hint(payload),
+        "link_click_hint" => {
+            db.insert_link_hint(payload)?;
+            Ok(json!(null))
+        }
+        "firefox_last_accessed_tabs" => firefox_last_accessed_tabs(),
         other => bail!("unknown message type: {other}"),
     }
+}
+
+fn firefox_last_accessed_tabs() -> Result<Value> {
+    let session_path = firefox_session_path()?;
+    let bytes = fs::read(&session_path)
+        .with_context(|| format!("failed to read {}", session_path.display()))?;
+    let json_bytes = decompress_moz_lz4(&bytes)?;
+    let session: Value = serde_json::from_slice(&json_bytes)?;
+    let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+
+    for window in session
+        .get("windows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for tab in window
+            .get("tabs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(entries) = tab.get("entries").and_then(Value::as_array) else {
+                continue;
+            };
+            let index = tab.get("index").and_then(Value::as_i64).unwrap_or(entries.len() as i64) - 1;
+            let Some(entry) = entries.get(index.max(0) as usize) else {
+                continue;
+            };
+            let Some(url) = entry.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                continue;
+            }
+
+            let accessed_at = tab
+                .get("lastAccessed")
+                .and_then(Value::as_i64)
+                .and_then(|millis| Utc.timestamp_millis_opt(millis).single())
+                .unwrap_or_else(Utc::now);
+            let date = accessed_at.with_timezone(&Local).date_naive().to_string();
+            groups.entry(date).or_default().push(json!({
+                "url": url,
+                "title": entry.get("title").and_then(Value::as_str),
+                "lastAccessed": accessed_at.to_rfc3339(),
+            }));
+        }
+    }
+
+    let groups = groups
+        .into_iter()
+        .rev()
+        .map(|(date, tabs)| json!({ "date": date, "tabs": tabs }))
+        .collect::<Vec<_>>();
+    Ok(json!({ "sessionPath": session_path, "groups": groups }))
+}
+
+fn firefox_session_path() -> Result<std::path::PathBuf> {
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    let profiles = Path::new(&home).join("Library/Application Support/Firefox/Profiles");
+    let mut candidates = Vec::new();
+    for profile in fs::read_dir(&profiles)
+        .with_context(|| format!("failed to read Firefox profiles at {}", profiles.display()))?
+    {
+        let profile = profile?.path();
+        for relative in [
+            "sessionstore-backups/recovery.jsonlz4",
+            "sessionstore-backups/recovery.baklz4",
+            "sessionstore.jsonlz4",
+        ] {
+            let path = profile.join(relative);
+            if let Ok(metadata) = fs::metadata(&path) {
+                candidates.push((metadata.modified()?, path));
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+        .context("could not find a Firefox session recovery file")
+}
+
+fn decompress_moz_lz4(bytes: &[u8]) -> Result<Vec<u8>> {
+    if !bytes.starts_with(b"mozLz40\0") || bytes.len() < 12 {
+        bail!("not a Firefox mozLz4 session file");
+    }
+    decompress_lz4_block(&bytes[12..])
+}
+
+fn decompress_lz4_block(input: &[u8]) -> Result<Vec<u8>> {
+    let mut pos = 0;
+    let mut output = Vec::new();
+    while pos < input.len() {
+        let token = input[pos];
+        pos += 1;
+
+        let mut literal_len = (token >> 4) as usize;
+        if literal_len == 15 {
+            loop {
+                let byte = *input.get(pos).context("truncated LZ4 literal length")? as usize;
+                pos += 1;
+                literal_len += byte;
+                if byte != 255 {
+                    break;
+                }
+            }
+        }
+        let literals_end = pos + literal_len;
+        if literals_end > input.len() {
+            bail!("truncated LZ4 literals");
+        }
+        output.extend_from_slice(&input[pos..literals_end]);
+        pos = literals_end;
+        if pos >= input.len() {
+            break;
+        }
+
+        if pos + 2 > input.len() {
+            bail!("truncated LZ4 offset");
+        }
+        let offset = u16::from_le_bytes([input[pos], input[pos + 1]]) as usize;
+        pos += 2;
+        if offset == 0 || offset > output.len() {
+            bail!("invalid LZ4 offset");
+        }
+
+        let mut match_len = (token & 0x0f) as usize;
+        if match_len == 15 {
+            loop {
+                let byte = *input.get(pos).context("truncated LZ4 match length")? as usize;
+                pos += 1;
+                match_len += byte;
+                if byte != 255 {
+                    break;
+                }
+            }
+        }
+        match_len += 4;
+        let start = output.len() - offset;
+        for i in 0..match_len {
+            output.push(output[start + i]);
+        }
+    }
+    Ok(output)
 }
 
 fn read_message<R: Read>(reader: &mut R) -> Result<Option<Value>> {
