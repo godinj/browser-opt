@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "Browser Opt",
+  "version": "0.1.0",
+  "description": "Local-first browser activity and tab archive capture.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "browser-opt@godin.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "background": {
+    "scripts": ["src/background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content-link-hints.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "webNavigation",
+    "storage",
+    "http://*/*",
+    "https://*/*"
+  ]
+}

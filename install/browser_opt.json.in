@@ -1,0 +1,7 @@
+{
+  "name": "browser_opt",
+  "description": "Browser Opt native messaging host",
+  "path": "__BT_PATH__",
+  "type": "stdio",
+  "allowed_extensions": ["browser-opt@godin.local"]
+}
