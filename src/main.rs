@@ -255,7 +255,7 @@ fn fzf_pages(db: &Db, query: Option<&str>) -> Result<()> {
     let selected = run_fzf(&input)?;
     if let Some(line) = selected {
         if let Some(url) = line.split('\t').nth(2) {
-            firefox::open_urls([url.to_string()])?;
+            queue_open_url(db, url)?;
         }
     }
     Ok(())
@@ -286,7 +286,7 @@ fn fzf_all(db: &Db, query: Option<&str>) -> Result<()> {
     let selected = run_fzf(&input)?;
     if let Some(line) = selected {
         if let Some(url) = line.split('\t').nth(3) {
-            firefox::open_urls([url.to_string()])?;
+            queue_open_url(db, url)?;
         }
     }
     Ok(())
@@ -313,7 +313,7 @@ fn fzf_archives(db: &Db, query: Option<&str>) -> Result<()> {
     let selected = run_fzf(&input)?;
     if let Some(line) = selected {
         if let Some(url) = line.split('\t').nth(2) {
-            firefox::open_urls([url.to_string()])?;
+            queue_open_url(db, url)?;
         }
     }
     Ok(())
@@ -388,6 +388,12 @@ fn open_missing(db: &Db, urls: Vec<String>) -> Result<()> {
     }
     firefox::open_urls(missing.iter().cloned())?;
     println!("opened {} missing URLs", missing.len());
+    Ok(())
+}
+
+fn queue_open_url(db: &Db, url: &str) -> Result<()> {
+    db.queue_open_url(url)?;
+    println!("queued open request: {url}");
     Ok(())
 }
 

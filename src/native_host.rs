@@ -68,6 +68,25 @@ fn handle_message(db: &Db, message: Value) -> Result<Value> {
             db.insert_link_hint(payload)?;
             Ok(json!(null))
         }
+        "pending_open_requests" => {
+            let requests = db
+                .pending_open_requests(25)?
+                .into_iter()
+                .map(|request| json!({ "id": request.id, "url": request.url }))
+                .collect::<Vec<_>>();
+            Ok(json!({ "requests": requests }))
+        }
+        "mark_open_requests_handled" => {
+            let ids = payload
+                .get("ids")
+                .and_then(Value::as_array)
+                .context("missing ids")?
+                .iter()
+                .filter_map(Value::as_i64)
+                .collect::<Vec<_>>();
+            db.mark_open_requests_handled(&ids)?;
+            Ok(json!(null))
+        }
         "firefox_last_accessed_tabs" => firefox_last_accessed_tabs(),
         other => bail!("unknown message type: {other}"),
     }
@@ -96,7 +115,11 @@ fn firefox_last_accessed_tabs() -> Result<Value> {
             let Some(entries) = tab.get("entries").and_then(Value::as_array) else {
                 continue;
             };
-            let index = tab.get("index").and_then(Value::as_i64).unwrap_or(entries.len() as i64) - 1;
+            let index = tab
+                .get("index")
+                .and_then(Value::as_i64)
+                .unwrap_or(entries.len() as i64)
+                - 1;
             let Some(entry) = entries.get(index.max(0) as usize) else {
                 continue;
             };

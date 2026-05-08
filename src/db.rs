@@ -54,6 +54,11 @@ pub struct RecurringUrl {
     pub position: i64,
 }
 
+pub struct OpenRequest {
+    pub id: i64,
+    pub url: String,
+}
+
 #[derive(Deserialize)]
 pub struct IncomingVisit {
     #[serde(alias = "targetUrl")]
@@ -423,6 +428,41 @@ impl Db {
         Ok(missing)
     }
 
+    pub fn queue_open_url(&self, url: &str) -> Result<()> {
+        let url = clean_url(url).context("invalid url")?;
+        let normalized_url = normalize_url(&url);
+        self.conn.execute(
+            "INSERT INTO open_request (url, normalized_url, requested_at) VALUES (?1, ?2, ?3)",
+            params![url, normalized_url, now_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn pending_open_requests(&self, limit: usize) -> Result<Vec<OpenRequest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, url FROM open_request WHERE handled_at IS NULL ORDER BY id LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(OpenRequest {
+                id: row.get(0)?,
+                url: row.get(1)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn mark_open_requests_handled(&self, ids: &[i64]) -> Result<()> {
+        let handled_at = now_string();
+        for id in ids {
+            self.conn.execute(
+                "UPDATE open_request SET handled_at = ?1 WHERE id = ?2",
+                params![handled_at, id],
+            )?;
+        }
+        Ok(())
+    }
+
     fn archive_summary(&self, date: &str) -> Result<ArchiveSummary> {
         self.conn
             .query_row(
@@ -709,4 +749,14 @@ CREATE TABLE IF NOT EXISTS recurring_url (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(set_id, normalized_url)
 );
+
+CREATE TABLE IF NOT EXISTS open_request (
+  id INTEGER PRIMARY KEY,
+  url TEXT NOT NULL,
+  normalized_url TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  handled_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_request_handled_at ON open_request(handled_at, id);
 "#;

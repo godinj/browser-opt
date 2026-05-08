@@ -5,6 +5,7 @@ let port = null;
 let reconnectTimer = null;
 let nextRequestId = 1;
 let suppressTSTMoveFixups = false;
+let pollingOpenRequests = false;
 const pendingNativeRequests = new Map();
 
 function setStatus(text, color = "#666666") {
@@ -148,6 +149,26 @@ function isDateTitle(title) {
   return /^\d{4}-\d{2}-\d{2}$/.test(title || "");
 }
 
+function todayDateTitle() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeUrlForMatch(input) {
+  try {
+    const url = new URL(input);
+    url.hash = "";
+    url.protocol = url.protocol.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
+    return url.href;
+  } catch (_) {
+    return input;
+  }
+}
+
 function isTSTGroupTab(item) {
   return Array.isArray(item.states) && item.states.includes("group-tab");
 }
@@ -203,11 +224,117 @@ async function attachTabToParent(childId, parentId) {
   });
 }
 
+async function findDateGroup(windowId, title) {
+  const items = await getTSTItemsByWindow(windowId);
+  return items.find(item => isTSTGroupTab(item) && item.tab && item.tab.title === title);
+}
+
+async function focusTab(tab) {
+  await browser.windows.update(tab.windowId, { focused: true });
+  await browser.tabs.update(tab.id, { active: true });
+}
+
+async function openUrlUnderToday(url) {
+  const normalizedUrl = normalizeUrlForMatch(url);
+  const tabs = await browser.tabs.query({});
+  const existing = tabs.find(tab => tab.url && normalizeUrlForMatch(tab.url) === normalizedUrl);
+  if (existing) {
+    await focusTab(existing);
+    return "focused";
+  }
+
+  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  const windowId = currentWindow && currentWindow.id;
+  const createProperties = windowId ? { url, windowId } : { url };
+  const today = todayDateTitle();
+
+  let dateGroup = null;
+  try {
+    await registerToTST();
+    dateGroup = windowId ? await findDateGroup(windowId, today) : null;
+  } catch (error) {
+    console.warn("Browser Opt could not inspect today's TST date group", error);
+  }
+
+  if (dateGroup) {
+    const tab = await browser.tabs.create({
+      ...createProperties,
+      index: dateGroup.tab.index + 1,
+      openerTabId: dateGroup.id,
+      active: true,
+    });
+    try {
+      await attachTabToParent(tab.id, dateGroup.id);
+    } catch (error) {
+      console.warn("Browser Opt could not attach tab to today's TST date group", error);
+    }
+    try {
+      await moveTreeToStart(dateGroup.id);
+    } catch (error) {
+      console.warn("Browser Opt could not restore today's TST date group position", error);
+    }
+    return "opened-under-existing-date";
+  }
+
+  const tab = await browser.tabs.create({ ...createProperties, active: true });
+  try {
+    await browser.runtime.sendMessage(TST_ID, {
+      type: "group-tabs",
+      title: today,
+      tabs: [tab.id],
+      temporary: false,
+      temporaryAggressive: false,
+    });
+  } catch (error) {
+    console.warn("Browser Opt could not create today's TST date group", error);
+    return "opened-without-date";
+  }
+
+  if (windowId) {
+    try {
+      await moveDateGroupToStart(windowId, today);
+    } catch (error) {
+      console.warn("Browser Opt could not restore today's TST date group position", error);
+    }
+  }
+
+  return "opened-under-new-date";
+}
+
+async function pollOpenRequests() {
+  if (pollingOpenRequests) return;
+  pollingOpenRequests = true;
+  try {
+    const { requests } = await sendNativeRequest("pending_open_requests");
+    const handledIds = [];
+    for (const request of requests || []) {
+      if (!request || !request.id || !request.url) continue;
+      await openUrlUnderToday(request.url);
+      handledIds.push(request.id);
+    }
+    if (handledIds.length) {
+      await sendNativeRequest("mark_open_requests_handled", { ids: handledIds });
+      await snapshotTabs("open-request");
+    }
+  } catch (error) {
+    console.warn("Browser Opt open request polling failed", error);
+  } finally {
+    pollingOpenRequests = false;
+  }
+}
+
 async function moveTreeToStart(tabId) {
   await browser.runtime.sendMessage(TST_ID, {
     type: "move-to-start",
     tab: tabId,
   });
+}
+
+async function moveDateGroupToStart(windowId, title) {
+  const dateGroup = await findDateGroup(windowId, title);
+  if (dateGroup) {
+    await moveTreeToStart(dateGroup.id);
+  }
 }
 
 async function moveTreeAfter(tabId, referenceTabId) {
@@ -585,3 +712,4 @@ browser.browserAction.onClicked.addListener(() => {
 
 registerToTST();
 connectNative();
+setInterval(pollOpenRequests, 1000);
