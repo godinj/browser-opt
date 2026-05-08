@@ -544,21 +544,9 @@ async function cleanupDateGroupsAndCategories() {
   return { message };
 }
 
-async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
-  setStatus("...", "#6f42c1");
-  await registerToTST();
-
-  const activeTab = await activeTabInActionSource(source);
-  if (!activeTab) {
-    throw new Error("No active tab found.");
-  }
-
-  const items = await getTSTItemsByWindow(activeTab.windowId);
-  const itemsById = new Map(items.map(item => [item.id, item]));
-  const activeItem = itemsById.get(activeTab.id);
-  if (!activeItem) {
-    throw new Error("Active tab is not visible to Tree Style Tab.");
-  }
+function findFolderForTab(tab, items, itemsById) {
+  const activeItem = itemsById.get(tab.id);
+  if (!activeItem) return null;
 
   let folder = isTSTFolder(activeItem) ? activeItem : null;
   if (!folder && activeItem.ancestorTabIds && activeItem.ancestorTabIds.length) {
@@ -569,15 +557,51 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
   }
   if (!folder) {
     folder = items
-      .filter(item => isTSTFolder(item) && collectDescendantTabIds(item).includes(activeTab.id))
+      .filter(item => isTSTFolder(item) && collectDescendantTabIds(item).includes(tab.id))
       .sort((a, b) => (b.ancestorTabIds || []).length - (a.ancestorTabIds || []).length)[0];
   }
   if (!folder) {
     folder = items
-      .filter(item => isTSTFolder(item) && item.tab && item.tab.index < activeTab.index)
+      .filter(item => isTSTFolder(item) && item.tab && item.tab.index < tab.index)
       .sort((a, b) => b.tab.index - a.tab.index)[0];
   }
-  if (!folder) {
+  return folder || null;
+}
+
+async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
+  setStatus("...", "#6f42c1");
+  await registerToTST();
+
+  const activeTab = await activeTabInActionSource(source);
+  if (!activeTab) {
+    throw new Error("No active tab found.");
+  }
+
+  const selectedTabs = (await browser.tabs.query({ highlighted: true, windowId: activeTab.windowId }))
+    .filter(tab => tab && tab.id !== undefined);
+  const tabsToResolve = selectedTabs.length > 1 ? selectedTabs : [activeTab];
+  const items = await getTSTItemsByWindow(activeTab.windowId);
+  const itemsById = new Map(items.map(item => [item.id, item]));
+  const activeItem = itemsById.get(activeTab.id);
+  if (!activeItem) {
+    throw new Error("Active tab is not visible to Tree Style Tab.");
+  }
+
+  const folders = [];
+  const folderIds = new Set();
+  for (const tab of tabsToResolve) {
+    const folder = findFolderForTab(tab, items, itemsById);
+    if (!folder || folderIds.has(folder.id)) continue;
+    folderIds.add(folder.id);
+    folders.push(folder);
+  }
+
+  const selectedFolderIds = new Set(folders.map(folder => folder.id));
+  const archiveFolders = folders.filter(folder =>
+    !(folder.ancestorTabIds || []).some(tabId => selectedFolderIds.has(tabId))
+  );
+
+  if (!archiveFolders.length) {
     const activeDetails = [
       `tab=${activeTab.id}`,
       `index=${activeTab.index}`,
@@ -588,23 +612,39 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
     throw new Error(`Active tab is not inside a Tree Style Tab folder. ${activeDetails}`);
   }
 
-  const descendantIds = collectDescendantTabIds(folder);
-  const tabsToArchive = descendantIds
-    .map(tabId => itemsById.get(tabId) && itemsById.get(tabId).tab)
-    .filter(tab => tab && tab.url && /^https?:/.test(tab.url))
-    .map(tabPayload);
-  if (!tabsToArchive.length) {
-    throw new Error("Folder does not contain any archiveable HTTP tabs.");
+  let archivedTabs = 0;
+  const archivedFolders = [];
+  const tabIdsToClose = new Set();
+  for (const folder of archiveFolders) {
+    const descendantIds = collectDescendantTabIds(folder);
+    const tabsToArchive = descendantIds
+      .map(tabId => itemsById.get(tabId) && itemsById.get(tabId).tab)
+      .filter(tab => tab && tab.url && /^https?:/.test(tab.url))
+      .map(tabPayload);
+    if (!tabsToArchive.length) continue;
+
+    const archiveDate = isDateTitle(folder.tab && folder.tab.title) ? folder.tab.title : todayDateTitle();
+    const result = await sendNativeRequest("archive_tabs", {
+      date: archiveDate,
+      tabs: tabsToArchive,
+    });
+    archivedTabs += tabsToArchive.length;
+    archivedFolders.push({ folder, date: result.date });
+
+    if (closeFolder) {
+      for (const tabId of [...descendantIds, folder.id]) {
+        tabIdsToClose.add(tabId);
+      }
+    }
   }
 
-  const archiveDate = isDateTitle(folder.tab && folder.tab.title) ? folder.tab.title : todayDateTitle();
-  const result = await sendNativeRequest("archive_tabs", {
-    date: archiveDate,
-    tabs: tabsToArchive,
-  });
+  if (!archivedTabs) {
+    throw new Error(archiveFolders.length === 1
+      ? "Folder does not contain any archiveable HTTP tabs."
+      : "Selected folders do not contain any archiveable HTTP tabs.");
+  }
 
   if (closeFolder) {
-    const tabIdsToClose = [...descendantIds, folder.id];
     for (const tabId of tabIdsToClose) {
       await browser.tabs.remove(tabId).catch(error => {
         console.warn(`Browser Opt could not close tab ${tabId}`, error);
@@ -612,7 +652,7 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
     }
     await sleep(150);
     const remainingTabIds = (
-      await Promise.all(tabIdsToClose.map(tabId => browser.tabs.get(tabId).then(tab => tab.id).catch(() => null)))
+      await Promise.all([...tabIdsToClose].map(tabId => browser.tabs.get(tabId).then(tab => tab.id).catch(() => null)))
     ).filter(Boolean);
     if (remainingTabIds.length) {
       await browser.tabs.remove(remainingTabIds);
@@ -620,10 +660,14 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
     await snapshotTabs("archive-folder-close");
   }
 
-  const message = closeFolder
-    ? `Archived and closed ${tabsToArchive.length} tabs from "${folder.tab.title || "folder"}" into ${result.date}.`
-    : `Archived ${tabsToArchive.length} tabs from "${folder.tab.title || "folder"}" into ${result.date}.`;
-  setStatus(String(tabsToArchive.length), "#008000");
+  const message = archivedFolders.length === 1
+    ? (closeFolder
+      ? `Archived and closed ${archivedTabs} tabs from "${archivedFolders[0].folder.tab.title || "folder"}" into ${archivedFolders[0].date}.`
+      : `Archived ${archivedTabs} tabs from "${archivedFolders[0].folder.tab.title || "folder"}" into ${archivedFolders[0].date}.`)
+    : (closeFolder
+      ? `Archived and closed ${archivedTabs} tabs from ${archivedFolders.length} folders.`
+      : `Archived ${archivedTabs} tabs from ${archivedFolders.length} folders.`);
+  setStatus(String(archivedTabs), "#008000");
   notify("Browser Opt", message);
   console.info(`Browser Opt ${message}`);
   return { message };

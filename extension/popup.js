@@ -40,16 +40,16 @@ const actions = [
     runningLabel: "Cleaning up TST folders",
   },
   {
-    title: "Archive current folder",
-    description: "Save every tab in the active TST folder to today's archive.",
+    title: "Archive selected folders",
+    description: "Save tabs from highlighted TST folders, or the active folder, to archives.",
     type: "browser-opt:archive-current-folder",
-    runningLabel: "Archiving current folder",
+    runningLabel: "Archiving selected folders",
   },
   {
-    title: "Archive and close current folder",
-    description: "Save every tab in the active TST folder to today's archive, then close the folder.",
+    title: "Archive and close selected folders",
+    description: "Save tabs from highlighted TST folders, or the active folder, then close them.",
     type: "browser-opt:archive-and-close-current-folder",
-    runningLabel: "Archiving and closing current folder",
+    runningLabel: "Archiving and closing selected folders",
   },
   {
     title: "Merge and sort date folders",
