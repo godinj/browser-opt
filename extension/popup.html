@@ -5,7 +5,8 @@
     <style>
       body {
         box-sizing: border-box;
-        min-width: 260px;
+        width: 360px;
+        min-width: 360px;
         margin: 0;
         padding: 12px;
         font: 13px system-ui, sans-serif;
@@ -15,6 +16,98 @@
       h1 {
         margin: 0 0 10px;
         font-size: 14px;
+      }
+
+      label {
+        display: block;
+        margin: 0 0 6px;
+        color: #57606a;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        margin: 0 0 8px;
+        padding: 8px 10px;
+        border: 1px solid #8c959f;
+        border-radius: 6px;
+        color: #1f2328;
+        font: inherit;
+      }
+
+      input:focus {
+        border-color: #0969da;
+        outline: 2px solid #0969da33;
+      }
+
+      #tab-results {
+        max-height: 280px;
+        margin: 0 0 12px;
+        overflow: auto;
+        border: 1px solid #d0d7de;
+        border-radius: 6px;
+      }
+
+      .tab-result {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 8px;
+        width: 100%;
+        margin: 0;
+        padding: 8px;
+        border: 0;
+        border-bottom: 1px solid #d0d7de;
+        border-radius: 0;
+        background: #ffffff;
+        text-align: left;
+      }
+
+      .tab-result:last-child {
+        border-bottom: 0;
+      }
+
+      .tab-result:hover,
+      .tab-result:focus {
+        background: #f6f8fa;
+        outline: none;
+      }
+
+      .tab-result.active {
+        background: #ddf4ff;
+      }
+
+      .tab-icon {
+        width: 16px;
+        height: 16px;
+        margin-top: 1px;
+      }
+
+      .tab-title,
+      .tab-url {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tab-title {
+        font-weight: 600;
+      }
+
+      .tab-url,
+      #tab-empty {
+        color: #57606a;
+        font-size: 12px;
+      }
+
+      #tab-empty {
+        padding: 10px;
+      }
+
+      .section {
+        padding-top: 10px;
+        border-top: 1px solid #d0d7de;
       }
 
       button {
@@ -44,9 +137,14 @@
   </head>
   <body>
     <h1>Browser Opt</h1>
-    <button id="group">Group tabs by last accessed date</button>
-    <button id="cleanup">Move date groups out, delete category folders</button>
-    <button id="sort">Merge and sort date folders</button>
+    <label for="tab-search">Search open tabs</label>
+    <input id="tab-search" type="search" placeholder="Title or URL" autocomplete="off">
+    <div id="tab-results" role="listbox" aria-label="Open tabs"></div>
+    <div class="section">
+      <button id="group">Group tabs by last accessed date</button>
+      <button id="cleanup">Move date groups out, delete category folders</button>
+      <button id="sort">Merge and sort date folders</button>
+    </div>
     <div id="status"></div>
     <script src="popup.js"></script>
   </body>

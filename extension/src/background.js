@@ -7,6 +7,8 @@ let nextRequestId = 1;
 let suppressTSTMoveFixups = false;
 let pollingOpenRequests = false;
 const pendingNativeRequests = new Map();
+const POPUP_WIDTH = 380;
+const POPUP_HEIGHT = 520;
 
 function setStatus(text, color = "#666666") {
   browser.browserAction.setBadgeText({ text });
@@ -232,6 +234,24 @@ async function findDateGroup(windowId, title) {
 async function focusTab(tab) {
   await browser.windows.update(tab.windowId, { focused: true });
   await browser.tabs.update(tab.id, { active: true });
+}
+
+async function openSearchPopup() {
+  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  const createProperties = {
+    url: browser.runtime.getURL("popup.html"),
+    type: "popup",
+    width: POPUP_WIDTH,
+    height: POPUP_HEIGHT,
+    focused: true,
+  };
+
+  if (currentWindow) {
+    createProperties.left = Math.round(currentWindow.left + (currentWindow.width - POPUP_WIDTH) / 2);
+    createProperties.top = Math.round(currentWindow.top + (currentWindow.height - POPUP_HEIGHT) / 2);
+  }
+
+  await browser.windows.create(createProperties);
 }
 
 async function openUrlUnderToday(url) {
@@ -702,11 +722,19 @@ browser.runtime.onMessage.addListener(message => {
 });
 
 browser.browserAction.onClicked.addListener(() => {
-  notify("Browser Opt", "Starting tab grouping by last accessed date...");
-  groupTabsByLastAccessedDate().catch(error => {
+  openSearchPopup().catch(error => {
     setStatus("!", "#d73a49");
     notify("Browser Opt failed", error.message || String(error));
-    console.error("Browser Opt failed to group tabs by last accessed date", error);
+    console.error("Browser Opt failed to open tab search popup", error);
+  });
+});
+
+browser.commands.onCommand.addListener(command => {
+  if (command !== "open-tab-search") return;
+  openSearchPopup().catch(error => {
+    setStatus("!", "#d73a49");
+    notify("Browser Opt failed", error.message || String(error));
+    console.error("Browser Opt failed to open tab search popup", error);
   });
 });
 

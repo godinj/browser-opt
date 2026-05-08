@@ -13,8 +13,16 @@
     "scripts": ["src/background.js"]
   },
   "browser_action": {
-    "default_title": "Browser Opt",
-    "default_popup": "popup.html"
+    "default_title": "Browser Opt"
+  },
+  "commands": {
+    "open-tab-search": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Ctrl+Shift+U"
+      },
+      "description": "Open tab search"
+    }
   },
   "content_scripts": [
     {
