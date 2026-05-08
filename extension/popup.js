@@ -65,6 +65,31 @@ function renderTabs() {
   }
 }
 
+function resultButtons() {
+  return Array.from(tabResults.querySelectorAll(".tab-result"));
+}
+
+function visibleStep(buttons) {
+  if (!buttons.length) return 1;
+
+  const buttonHeight = buttons[0].getBoundingClientRect().height || 1;
+  return Math.max(1, Math.floor(tabResults.clientHeight / buttonHeight / 2));
+}
+
+function focusResult(offset) {
+  const buttons = resultButtons();
+  if (!buttons.length) return;
+
+  const currentIndex = buttons.indexOf(document.activeElement);
+  const nextIndex = Math.min(
+    buttons.length - 1,
+    Math.max(0, (currentIndex === -1 ? 0 : currentIndex) + offset)
+  );
+
+  buttons[nextIndex].focus();
+  buttons[nextIndex].scrollIntoView({ block: "nearest" });
+}
+
 async function loadTabs() {
   tabs = await browser.tabs.query({});
   renderTabs();
@@ -103,6 +128,30 @@ searchInput.addEventListener("keydown", event => {
   if (event.key === "Enter" && renderedTabs.length) {
     event.preventDefault();
     focusTab(renderedTabs[0]);
+  }
+});
+tabResults.addEventListener("keydown", event => {
+  if (event.key === "j" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    focusResult(1);
+    return;
+  }
+
+  if (event.key === "k" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    focusResult(-1);
+    return;
+  }
+
+  if (event.key === "d" && event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    focusResult(visibleStep(resultButtons()));
+    return;
+  }
+
+  if (event.key === "u" && event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    focusResult(-visibleStep(resultButtons()));
   }
 });
 loadTabs().catch(error => {
