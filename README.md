@@ -21,7 +21,7 @@ cargo build --release
 ./install/install-native-host.sh ./target/release/browser-opt
 ```
 
-The installer installs `ttyd` and `tmux` if they are missing, then writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS.
+The installer installs `ttyd`, `tmux`, and JetBrainsMono Nerd Font if they are missing, then writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS.
 
 ## Load Extension
 
@@ -51,13 +51,15 @@ Use `--db ./dev.sqlite` with any command to work against a development database.
 
 When `browser-opt` starts, it also starts a local `ttyd` server in the background if one is not already listening on `127.0.0.1:7681`.
 
-The web terminal runs:
+The web terminal starts your normal login shell in the project directory:
 
 ```bash
-tmux new-session -A -s browser-opt
+$SHELL -l
 ```
 
 Open `http://127.0.0.1:7681` to attach to the session.
+
+`ttyd` is configured to use JetBrainsMono Nerd Font so terminal icons render correctly, and keeps the browser title fixed as ` browser-opt` instead of using shell title updates.
 
 The Firefox extension can also open or focus the terminal from the action search, or with `Ctrl+Shift+Period` / `Command+Shift+Period` on macOS.
 

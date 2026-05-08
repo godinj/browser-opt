@@ -2,11 +2,11 @@ mod db;
 mod firefox;
 mod native_host;
 
-use std::fs;
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration as StdDuration;
+use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Local, NaiveDate};
@@ -201,25 +201,45 @@ fn ensure_ttyd_running() -> Result<()> {
         return Ok(());
     }
 
-    Command::new("ttyd")
-        .args([
-            "-i",
-            "127.0.0.1",
-            "-p",
-            "7681",
-            "-W",
-            "-t",
-            "macOptionIsMeta=true",
-            "-t",
-            "macOptionClickForcesSelection=true",
-            "-w",
-            env!("CARGO_MANIFEST_DIR"),
-            "tmux",
-            "new-session",
-            "-A",
-            "-s",
-            "browser-opt",
-        ])
+    let shell = env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("sh");
+    let shell_path = shell.to_string_lossy().into_owned();
+
+    let mut command = Command::new("ttyd");
+    command.args([
+        "-i",
+        "127.0.0.1",
+        "-p",
+        "7681",
+        "-W",
+        "-t",
+        "macOptionIsMeta=true",
+        "-t",
+        "macOptionClickForcesSelection=true",
+        "-t",
+        "fontFamily=JetBrainsMono Nerd Font Mono,JetBrainsMono Nerd Font,monospace",
+        "-t",
+        "titleFixed= browser-opt",
+        "-w",
+        env!("CARGO_MANIFEST_DIR"),
+    ]);
+
+    if cfg!(target_os = "macos") {
+        let user = env::var("USER").context("USER not set")?;
+        command
+            .arg("/usr/bin/login")
+            .args(["-flp", &user, &shell_path, "-fc"])
+            .arg(format!("exec -a -{shell_name} {shell_path}"));
+    } else {
+        command.arg(shell).arg("-l");
+    }
+
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -478,12 +498,9 @@ fn import_db(db_path: &PathBuf, source: PathBuf, replace: bool) -> Result<()> {
 }
 
 fn command_exists(command: &str) -> bool {
-    Command::new(command)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    env::var_os("PATH").is_some_and(|path| {
+        env::split_paths(&path).any(|directory| directory.join(command).is_file())
+    })
 }
 
 fn print_search_row(row: &SearchRow) {

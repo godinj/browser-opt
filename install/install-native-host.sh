@@ -37,8 +37,50 @@ install_command() {
   fi
 }
 
+install_nerd_font() {
+  local font_name="JetBrainsMono"
+  local font_url="https://github.com/ryanoasis/nerd-fonts/releases/latest/download/${font_name}.zip"
+  local font_dir
+
+  case "$(uname -s)" in
+    Darwin)
+      font_dir="$HOME/Library/Fonts"
+      ;;
+    Linux)
+      font_dir="$HOME/.local/share/fonts"
+      ;;
+    *)
+      echo "unsupported OS: $(uname -s)" >&2
+      exit 1
+      ;;
+  esac
+
+  if compgen -G "$font_dir/JetBrainsMonoNerdFont*.ttf" >/dev/null; then
+    echo "JetBrainsMono Nerd Font already installed in $font_dir"
+    return
+  fi
+
+  echo "JetBrainsMono Nerd Font not found; installing to $font_dir"
+  mkdir -p "$font_dir"
+
+  local temp_dir
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "$temp_dir"' RETURN
+
+  curl -fsSL "$font_url" -o "$temp_dir/${font_name}.zip"
+  unzip -q "$temp_dir/${font_name}.zip" -d "$temp_dir/$font_name"
+  install -m 0644 "$temp_dir"/"$font_name"/*.ttf "$font_dir"/
+
+  if command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -f "$font_dir" >/dev/null
+  fi
+}
+
+install_command curl
+install_command unzip
 install_command ttyd
 install_command tmux
+install_nerd_font
 
 case "$(uname -s)" in
   Darwin)
