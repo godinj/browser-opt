@@ -58,6 +58,13 @@ const actions = [
     runningLabel: "Archiving and closing selected folders",
   },
   {
+    title: "Group selected tabs into folder",
+    description: "Create a Tree Style Tab folder from the selected TST tabs.",
+    type: "browser-opt:group-selected-tabs",
+    runningLabel: "Grouping selected tabs",
+    promptTitle: true,
+  },
+  {
     title: "Merge and sort date folders",
     description: "Deduplicate date folders and sort them newest first.",
     type: "browser-opt:sort-date-groups",
@@ -287,9 +294,19 @@ async function runAction(action) {
     return;
   }
 
+  const payload = { type: action.type };
+  if (action.promptTitle) {
+    const title = window.prompt("Name the Tree Style Tab folder", "Selected Tabs");
+    if (!title || !title.trim()) {
+      status.textContent = "Cancelled.";
+      return;
+    }
+    payload.title = title.trim();
+  }
+
   status.textContent = `${action.runningLabel}...`;
   try {
-    const result = await browser.runtime.sendMessage({ type: action.type });
+    const result = await browser.runtime.sendMessage(payload);
     status.textContent = result && result.message ? result.message : "Done.";
   } catch (error) {
     status.textContent = error.message || String(error);

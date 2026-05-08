@@ -229,6 +229,26 @@ async function getTSTItemsByWindow(windowId) {
   return Array.from(itemsById.values());
 }
 
+async function getTSTSelectedTabIds(windowId) {
+  const treeItems = await browser.runtime.sendMessage(TST_ID, {
+    type: "get-light-tree",
+    window: windowId,
+    tabs: "multiselected",
+  });
+  const selectedIds = [];
+  const visit = item => {
+    if (!item || item.id === undefined) return;
+    selectedIds.push(item.id);
+    for (const child of item.children || []) {
+      visit(child);
+    }
+  };
+  for (const item of treeItems || []) {
+    visit(item);
+  }
+  return [...new Set(selectedIds)];
+}
+
 async function detachTabFromTree(tabId) {
   try {
     await browser.runtime.sendMessage(TST_ID, {
@@ -688,6 +708,66 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
   return { message };
 }
 
+async function promptForTSTFolderTitle(tab, defaultTitle = "Selected Tabs") {
+  if (typeof window.prompt === "function") {
+    const title = window.prompt("Name the Tree Style Tab folder", defaultTitle);
+    return title && title.trim() ? title.trim() : null;
+  }
+
+  const results = await browser.tabs.executeScript(tab.id, {
+    code: `window.prompt(${JSON.stringify("Name the Tree Style Tab folder")}, ${JSON.stringify(defaultTitle)})`,
+  });
+  const title = results && results[0];
+  return title && title.trim() ? title.trim() : null;
+}
+
+async function groupSelectedTabsIntoTSTFolder({ source = {}, title } = {}) {
+  setStatus("...", "#6f42c1");
+  await registerToTST();
+
+  const activeTab = await activeTabInActionSource(source);
+  if (!activeTab) {
+    throw new Error("No active tab found.");
+  }
+
+  const folderTitle = title && title.trim() ? title.trim() : await promptForTSTFolderTitle(activeTab);
+  if (!folderTitle) {
+    const message = "Cancelled.";
+    setStatus("", "#666666");
+    return { message };
+  }
+
+  const selectedTabs = (await browser.tabs.query({ highlighted: true, windowId: activeTab.windowId }))
+    .filter(tab => tab && tab.id !== undefined)
+    .sort((a, b) => a.index - b.index);
+  const tstSelectedTabIds = await getTSTSelectedTabIds(activeTab.windowId).catch(error => {
+    console.warn("Browser Opt could not read TST selected tabs", error);
+    return [];
+  });
+  const useTSTSelectionAlias = tstSelectedTabIds.length < 2 && selectedTabs.length < 2;
+  const tabsToGroup = tstSelectedTabIds.length > 1
+    ? tstSelectedTabIds
+    : (selectedTabs.length > 1 ? selectedTabs.map(tab => tab.id) : ["multiselected"]);
+  const parentTab = await browser.runtime.sendMessage(TST_ID, {
+    type: "group-tabs",
+    title: folderTitle,
+    window: activeTab.windowId,
+    tabs: tabsToGroup,
+    temporary: false,
+    temporaryAggressive: false,
+  });
+  const groupedCount = useTSTSelectionAlias ? "TST" : tabsToGroup.length;
+
+  setStatus(String(parentTab && parentTab.id ? 1 : groupedCount), "#008000");
+  const message = useTSTSelectionAlias
+    ? `Grouped selected Tree Style Tab tabs into "${folderTitle}".`
+    : `Grouped ${tabsToGroup.length} selected ${tabsToGroup.length === 1 ? "tab" : "tabs"} into "${folderTitle}".`;
+  notify("Browser Opt", message);
+  console.info(`Browser Opt ${message}`);
+  await snapshotTabs("group-selected-tabs");
+  return { message };
+}
+
 async function sortDateGroupsNewestFirst() {
   setStatus("...", "#6f42c1");
   await registerToTST();
@@ -917,18 +997,17 @@ browser.webNavigation.onHistoryStateUpdated.addListener(async details => {
 });
 
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (!message || message.type !== "browser-opt:link-click") return;
-  sendNative("link_click_hint", {
-    sourceUrl: message.sourceUrl,
-    targetUrl: message.targetUrl,
-    clickedAt: message.clickedAt,
-    tabId: sender.tab && sender.tab.id,
-    windowId: sender.tab && sender.tab.windowId,
-  });
-});
-
-browser.runtime.onMessage.addListener(message => {
-  if (!message || message.type === "browser-opt:link-click") return undefined;
+  if (!message) return undefined;
+  if (message.type === "browser-opt:link-click") {
+    sendNative("link_click_hint", {
+      sourceUrl: message.sourceUrl,
+      targetUrl: message.targetUrl,
+      clickedAt: message.clickedAt,
+      tabId: sender.tab && sender.tab.id,
+      windowId: sender.tab && sender.tab.windowId,
+    });
+    return undefined;
+  }
   if (message.type === "browser-opt:group-by-date") {
     return groupTabsByLastAccessedDate().then(() => ({ message: "Grouped tabs by date." }));
   }
@@ -949,6 +1028,9 @@ browser.runtime.onMessage.addListener(message => {
   }
   if (message.type === "browser-opt:archive-and-close-current-folder") {
     return archiveCurrentFolder({ closeFolder: true, source: lastPopupSource });
+  }
+  if (message.type === "browser-opt:group-selected-tabs") {
+    return groupSelectedTabsIntoTSTFolder({ source: lastPopupSource, title: message.title });
   }
   if (message.type === "browser-opt:sort-date-groups") {
     return sortDateGroupsNewestFirst();
@@ -978,6 +1060,14 @@ browser.commands.onCommand.addListener(command => {
       setStatus("!", "#d73a49");
       notify("Browser Opt failed", error.message || String(error));
       console.error("Browser Opt failed to open terminal", error);
+    });
+    return;
+  }
+  if (command === "group-selected-tabs") {
+    groupSelectedTabsIntoTSTFolder().catch(error => {
+      setStatus("!", "#d73a49");
+      notify("Browser Opt failed", error.message || String(error));
+      console.error("Browser Opt failed to group selected tabs", error);
     });
     return;
   }

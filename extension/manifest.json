@@ -43,6 +43,13 @@
         "mac": "Command+Shift+Period"
       },
       "description": "Open Browser Opt terminal"
+    },
+    "group-selected-tabs": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Group selected tabs into a TST folder"
     }
   },
   "content_scripts": [
