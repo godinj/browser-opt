@@ -13,6 +13,33 @@ if [[ ! -x "$BROWSER_OPT_PATH" ]]; then
   exit 1
 fi
 
+install_command() {
+  local command_name="$1"
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    echo "$command_name already installed: $(command -v "$command_name")"
+    return
+  fi
+
+  echo "$command_name not found; installing $command_name"
+  if command -v brew >/dev/null 2>&1; then
+    brew install "$command_name"
+  elif command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y "$command_name"
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y "$command_name"
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --needed "$command_name"
+  else
+    echo "could not install $command_name: install Homebrew, apt, dnf, or pacman and rerun this script" >&2
+    exit 1
+  fi
+}
+
+install_command ttyd
+install_command tmux
+
 case "$(uname -s)" in
   Darwin)
     HOST_DIR="$HOME/Library/Application Support/Mozilla/NativeMessagingHosts"

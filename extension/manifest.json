@@ -36,6 +36,13 @@
         "mac": "Command+Shift+I"
       },
       "description": "Open archived tab search"
+    },
+    "open-terminal": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Period",
+        "mac": "Command+Shift+Period"
+      },
+      "description": "Open Browser Opt terminal"
     }
   },
   "content_scripts": [

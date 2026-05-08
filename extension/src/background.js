@@ -1,5 +1,7 @@
 const HOST_NAME = "browser_opt";
 const TST_ID = "treestyletab@piro.sakura.ne.jp";
+const TERMINAL_URL = "http://127.0.0.1:7681/";
+const TERMINAL_MATCH_URL = "http://127.0.0.1:7681/*";
 
 let port = null;
 let reconnectTimer = null;
@@ -328,6 +330,19 @@ async function openPopup(mode = "tabs") {
 
   const popupWindow = await browser.windows.create(createProperties);
   popupWindowId = popupWindow.id;
+}
+
+async function openTerminal() {
+  const tabs = await browser.tabs.query({ url: TERMINAL_MATCH_URL });
+  const existingTab = tabs[0];
+  if (existingTab) {
+    await focusTab(existingTab);
+    return;
+  }
+
+  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  const createProperties = currentWindow ? { url: TERMINAL_URL, windowId: currentWindow.id } : { url: TERMINAL_URL };
+  await browser.tabs.create(createProperties);
 }
 
 async function openUrlUnderToday(url) {
@@ -938,6 +953,9 @@ browser.runtime.onMessage.addListener(message => {
   if (message.type === "browser-opt:sort-date-groups") {
     return sortDateGroupsNewestFirst();
   }
+  if (message.type === "browser-opt:open-terminal") {
+    return openTerminal().then(() => ({ message: "Opened terminal." }));
+  }
   return undefined;
 });
 
@@ -955,6 +973,14 @@ browser.commands.onCommand.addListener(command => {
     "open-action-search": "actions",
     "open-archived-tab-search": "history",
   };
+  if (command === "open-terminal") {
+    openTerminal().catch(error => {
+      setStatus("!", "#d73a49");
+      notify("Browser Opt failed", error.message || String(error));
+      console.error("Browser Opt failed to open terminal", error);
+    });
+    return;
+  }
   const mode = modesByCommand[command];
   if (!mode) return;
   openPopup(mode).catch(error => {

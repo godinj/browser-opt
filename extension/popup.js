@@ -28,6 +28,12 @@ const actions = [
     mode: "history",
   },
   {
+    title: "Open web terminal",
+    description: "Open the local Browser Opt ttyd session.",
+    type: "browser-opt:open-terminal",
+    runningLabel: "Opening terminal",
+  },
+  {
     title: "Group tabs by last accessed date",
     description: "Create Tree Style Tab date groups from Firefox session access data.",
     type: "browser-opt:group-by-date",

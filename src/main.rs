@@ -3,8 +3,10 @@ mod firefox;
 mod native_host;
 
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration as StdDuration;
 
 use anyhow::{Context, Result, bail};
 use chrono::{Duration, Local, NaiveDate};
@@ -93,6 +95,9 @@ enum RecurringCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db_path = db::resolve_db_path(cli.db)?;
+    if let Err(error) = ensure_ttyd_running() {
+        eprintln!("warning: failed to start ttyd: {error:#}");
+    }
 
     match cli.command {
         Commands::Doctor => doctor(&db_path),
@@ -190,6 +195,40 @@ fn main() -> Result<()> {
     }
 }
 
+fn ensure_ttyd_running() -> Result<()> {
+    let addr: SocketAddr = "127.0.0.1:7681".parse()?;
+    if TcpStream::connect_timeout(&addr, StdDuration::from_millis(100)).is_ok() {
+        return Ok(());
+    }
+
+    Command::new("ttyd")
+        .args([
+            "-i",
+            "127.0.0.1",
+            "-p",
+            "7681",
+            "-W",
+            "-t",
+            "macOptionIsMeta=true",
+            "-t",
+            "macOptionClickForcesSelection=true",
+            "-w",
+            env!("CARGO_MANIFEST_DIR"),
+            "tmux",
+            "new-session",
+            "-A",
+            "-s",
+            "browser-opt",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to spawn ttyd")?;
+
+    Ok(())
+}
+
 fn doctor(db_path: &PathBuf) -> Result<()> {
     let db = Db::open(db_path)?;
     println!("database: {}", db_path.display());
@@ -205,6 +244,22 @@ fn doctor(db_path: &PathBuf) -> Result<()> {
     println!(
         "fzf: {}",
         if command_exists("fzf") {
+            "found"
+        } else {
+            "not found"
+        }
+    );
+    println!(
+        "ttyd: {}",
+        if command_exists("ttyd") {
+            "found"
+        } else {
+            "not found"
+        }
+    );
+    println!(
+        "tmux: {}",
+        if command_exists("tmux") {
             "found"
         } else {
             "not found"
