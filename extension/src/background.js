@@ -236,10 +236,10 @@ async function focusTab(tab) {
   await browser.tabs.update(tab.id, { active: true });
 }
 
-async function openSearchPopup() {
+async function openPopup(mode = "tabs") {
   const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   const createProperties = {
-    url: browser.runtime.getURL("popup.html"),
+    url: browser.runtime.getURL(`popup.html?mode=${encodeURIComponent(mode)}`),
     type: "popup",
     width: POPUP_WIDTH,
     height: POPUP_HEIGHT,
@@ -712,6 +712,15 @@ browser.runtime.onMessage.addListener(message => {
   if (message.type === "browser-opt:group-by-date") {
     return groupTabsByLastAccessedDate().then(() => ({ message: "Grouped tabs by date." }));
   }
+  if (message.type === "browser-opt:archived-tabs") {
+    return sendNativeRequest("archived_tabs", {
+      query: message.query || "",
+      limit: message.limit || 50,
+    });
+  }
+  if (message.type === "browser-opt:open-url") {
+    return openUrlUnderToday(message.url).then(result => ({ result }));
+  }
   if (message.type === "browser-opt:cleanup-date-groups") {
     return cleanupDateGroupsAndCategories();
   }
@@ -722,7 +731,7 @@ browser.runtime.onMessage.addListener(message => {
 });
 
 browser.browserAction.onClicked.addListener(() => {
-  openSearchPopup().catch(error => {
+  openPopup("tabs").catch(error => {
     setStatus("!", "#d73a49");
     notify("Browser Opt failed", error.message || String(error));
     console.error("Browser Opt failed to open tab search popup", error);
@@ -730,11 +739,16 @@ browser.browserAction.onClicked.addListener(() => {
 });
 
 browser.commands.onCommand.addListener(command => {
-  if (command !== "open-tab-search") return;
-  openSearchPopup().catch(error => {
+  const modesByCommand = {
+    "open-tab-search": "tabs",
+    "open-action-search": "actions",
+  };
+  const mode = modesByCommand[command];
+  if (!mode) return;
+  openPopup(mode).catch(error => {
     setStatus("!", "#d73a49");
     notify("Browser Opt failed", error.message || String(error));
-    console.error("Browser Opt failed to open tab search popup", error);
+    console.error("Browser Opt failed to open popup", error);
   });
 });
 

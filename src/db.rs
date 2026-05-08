@@ -336,6 +336,19 @@ impl Db {
         collect_archived_tabs(&mut stmt, params![query, limit as i64])
     }
 
+    pub fn search_archives_like(&self, query: &str, limit: usize) -> Result<Vec<ArchivedTab>> {
+        let pattern = format!("%{query}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT daily_archive.archive_date, archived_tab.url, archived_tab.title, archived_tab.captured_at
+             FROM archived_tab
+             JOIN daily_archive ON daily_archive.id = archived_tab.archive_id
+             WHERE archived_tab.url LIKE ?1 OR archived_tab.title LIKE ?1 OR daily_archive.archive_date LIKE ?1
+             ORDER BY daily_archive.archive_date DESC, archived_tab.id DESC
+             LIMIT ?2",
+        )?;
+        collect_archived_tabs(&mut stmt, params![pattern, limit as i64])
+    }
+
     pub fn recent_archived_tabs(&self, limit: usize) -> Result<Vec<ArchivedTab>> {
         let mut stmt = self.conn.prepare(
             "SELECT daily_archive.archive_date, archived_tab.url, archived_tab.title, archived_tab.captured_at

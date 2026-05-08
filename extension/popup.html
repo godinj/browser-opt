@@ -50,7 +50,24 @@
         border-radius: 6px;
       }
 
-      .tab-result {
+      #action-results {
+        max-height: 360px;
+        margin: 0 0 12px;
+        overflow: auto;
+        border: 1px solid #d0d7de;
+        border-radius: 6px;
+      }
+
+      #archive-results {
+        max-height: 360px;
+        margin: 0 0 12px;
+        overflow: auto;
+        border: 1px solid #d0d7de;
+        border-radius: 6px;
+      }
+
+      .tab-result,
+      .archive-result {
         display: grid;
         grid-template-columns: 18px 1fr;
         gap: 8px;
@@ -64,12 +81,37 @@
         text-align: left;
       }
 
-      .tab-result:last-child {
+      .action-result {
+        display: block;
+        width: 100%;
+        margin: 0;
+        padding: 9px 10px;
+        border: 0;
+        border-bottom: 1px solid #d0d7de;
+        border-radius: 0;
+        background: #ffffff;
+        text-align: left;
+      }
+
+      .action-result:last-child {
+        border-bottom: 0;
+      }
+
+      .action-result:hover,
+      .action-result:focus {
+        background: #f6f8fa;
+        outline: none;
+      }
+
+      .tab-result:last-child,
+      .archive-result:last-child {
         border-bottom: 0;
       }
 
       .tab-result:hover,
-      .tab-result:focus {
+      .tab-result:focus,
+      .archive-result:hover,
+      .archive-result:focus {
         background: #f6f8fa;
         outline: none;
       }
@@ -78,31 +120,79 @@
         background: #ddf4ff;
       }
 
-      .tab-icon {
+      .tab-icon,
+      .archive-icon {
         width: 16px;
         height: 16px;
         margin-top: 1px;
       }
 
+      .archive-icon {
+        border-radius: 3px;
+        background: #6f42c1;
+        color: #ffffff;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 16px;
+        text-align: center;
+      }
+
       .tab-title,
+      .archive-title,
       .tab-url {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
 
-      .tab-title {
+      .tab-title,
+      .archive-title {
         font-weight: 600;
       }
 
+      .action-title {
+        font-weight: 600;
+      }
+
+      .action-description {
+        margin-top: 2px;
+        color: #57606a;
+        font-size: 12px;
+      }
+
       .tab-url,
+      .archive-url,
+      .archive-date,
       #tab-empty {
         color: #57606a;
         font-size: 12px;
       }
 
+      .archive-url,
+      .archive-date {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       #tab-empty {
         padding: 10px;
+      }
+
+      #action-empty {
+        padding: 10px;
+        color: #57606a;
+        font-size: 12px;
+      }
+
+      #archive-empty {
+        padding: 10px;
+        color: #57606a;
+        font-size: 12px;
+      }
+
+      .hidden {
+        display: none;
       }
 
       .section {
@@ -137,13 +227,20 @@
   </head>
   <body>
     <h1>Browser Opt</h1>
-    <label for="tab-search">Search open tabs</label>
-    <input id="tab-search" type="search" placeholder="Title or URL" autocomplete="off">
-    <div id="tab-results" role="listbox" aria-label="Open tabs"></div>
-    <div class="section">
-      <button id="group">Group tabs by last accessed date</button>
-      <button id="cleanup">Move date groups out, delete category folders</button>
-      <button id="sort">Merge and sort date folders</button>
+    <div id="tab-panel">
+      <label for="tab-search">Search open tabs</label>
+      <input id="tab-search" type="search" placeholder="Title or URL" autocomplete="off">
+      <div id="tab-results" role="listbox" aria-label="Open tabs"></div>
+    </div>
+    <div id="action-panel" class="hidden">
+      <label for="action-search">Search actions</label>
+      <input id="action-search" type="search" placeholder="Action name" autocomplete="off">
+      <div id="action-results" role="listbox" aria-label="Actions"></div>
+    </div>
+    <div id="archive-panel" class="hidden">
+      <label for="archive-search">Search archived tabs</label>
+      <input id="archive-search" type="search" placeholder="Title or URL" autocomplete="off">
+      <div id="archive-results" role="listbox" aria-label="Archived tabs"></div>
     </div>
     <div id="status"></div>
     <script src="popup.js"></script>

@@ -76,6 +76,34 @@ fn handle_message(db: &Db, message: Value) -> Result<Value> {
                 .collect::<Vec<_>>();
             Ok(json!({ "requests": requests }))
         }
+        "archived_tabs" => {
+            let query = payload
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(50)
+                .min(200) as usize;
+            let tabs = if query.is_empty() {
+                db.recent_archived_tabs(limit)?
+            } else {
+                db.search_archives_like(query, limit)?
+            }
+            .into_iter()
+            .map(|tab| {
+                json!({
+                    "archiveDate": tab.archive_date,
+                    "url": tab.url,
+                    "title": tab.title,
+                    "capturedAt": tab.captured_at,
+                })
+            })
+            .collect::<Vec<_>>();
+            Ok(json!({ "tabs": tabs }))
+        }
         "mark_open_requests_handled" => {
             let ids = payload
                 .get("ids")

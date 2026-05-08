@@ -19,9 +19,16 @@
     "open-tab-search": {
       "suggested_key": {
         "default": "Ctrl+Shift+U",
-        "mac": "Ctrl+Shift+U"
+        "mac": "Command+Shift+U"
       },
       "description": "Open tab search"
+    },
+    "open-action-search": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Open action search"
     }
   },
   "content_scripts": [
