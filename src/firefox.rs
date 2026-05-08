@@ -32,5 +32,9 @@ where
 }
 
 fn firefox_command() -> &'static str {
-    "firefox"
+    if cfg!(target_os = "macos") {
+        "/Applications/Firefox.app/Contents/MacOS/firefox"
+    } else {
+        "firefox"
+    }
 }
