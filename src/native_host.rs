@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use chrono::{Local, TimeZone, Utc};
+use chrono::{Local, NaiveDate, TimeZone, Utc};
 use serde_json::{Value, json};
 
 use crate::db::{Db, IncomingTab, IncomingVisit};
@@ -63,6 +63,23 @@ fn handle_message(db: &Db, message: Value) -> Result<Value> {
                 .unwrap_or("native-message");
             db.replace_current_tabs(&tabs, captured_at, reason)?;
             Ok(json!(null))
+        }
+        "archive_tabs" => {
+            let tabs = payload.get("tabs").cloned().context("missing tabs")?;
+            let tabs: Vec<IncomingTab> = serde_json::from_value(tabs)?;
+            let date = payload
+                .get("date")
+                .and_then(Value::as_str)
+                .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d"))
+                .transpose()
+                .context("invalid archive date")?
+                .unwrap_or_else(|| Local::now().date_naive());
+            let summary = db.add_tabs_to_archive(date, &tabs)?;
+            Ok(json!({
+                "date": summary.date,
+                "tabCount": summary.tab_count,
+                "visitCount": summary.visit_count,
+            }))
         }
         "link_click_hint" => {
             db.insert_link_hint(payload)?;

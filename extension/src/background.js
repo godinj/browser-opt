@@ -180,6 +180,20 @@ function collectDirectChildren(item) {
   return Array.isArray(item.children) ? item.children.map(child => child.id) : [];
 }
 
+function collectDescendantTabIds(item) {
+  const tabIds = [];
+  const visit = child => {
+    tabIds.push(child.id);
+    for (const grandchild of child.children || []) {
+      visit(grandchild);
+    }
+  };
+  for (const child of item.children || []) {
+    visit(child);
+  }
+  return tabIds;
+}
+
 async function getTSTItemsByWindow(windowId) {
   const treeItems = await browser.runtime.sendMessage(TST_ID, {
     type: "get-light-tree",
@@ -256,6 +270,22 @@ async function findPopupWindow() {
   return popupWindows.find(window => window.tabs && window.tabs.some(isPopupTab)) || null;
 }
 
+async function activeTabInActionSource(source = {}) {
+  if (source.tabId) {
+    const tab = await browser.tabs.get(source.tabId).catch(() => null);
+    if (tab) return tab;
+  }
+
+  if (source.windowId) {
+    const [activeTab] = await browser.tabs.query({ active: true, windowId: source.windowId });
+    if (activeTab) return activeTab;
+  }
+
+  const window = await browser.windows.getLastFocused({ windowTypes: ["normal"] });
+  const [activeTab] = await browser.tabs.query({ active: true, windowId: window.id });
+  return activeTab;
+}
+
 async function openPopup(mode = "tabs") {
   const url = browser.runtime.getURL(`popup.html?mode=${encodeURIComponent(mode)}`);
   const existingWindow = await findPopupWindow();
@@ -269,7 +299,6 @@ async function openPopup(mode = "tabs") {
     return;
   }
 
-  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   const createProperties = {
     url,
     type: "popup",
@@ -278,6 +307,7 @@ async function openPopup(mode = "tabs") {
     focused: true,
   };
 
+  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   if (currentWindow) {
     createProperties.left = Math.round(currentWindow.left + (currentWindow.width - POPUP_WIDTH) / 2);
     createProperties.top = Math.round(currentWindow.top + (currentWindow.height - POPUP_HEIGHT) / 2);
@@ -496,6 +526,73 @@ async function cleanupDateGroupsAndCategories() {
 
   setStatus(String(promotedDateGroups), "#008000");
   const message = `Moved ${promotedDateGroups} date groups out and removed ${removedCategoryGroups} category folders.`;
+  notify("Browser Opt", message);
+  console.info(`Browser Opt ${message}`);
+  return { message };
+}
+
+async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
+  setStatus("...", "#6f42c1");
+  await registerToTST();
+
+  const activeTab = await activeTabInActionSource(source);
+  if (!activeTab) {
+    throw new Error("No active tab found.");
+  }
+
+  const items = await getTSTItemsByWindow(activeTab.windowId);
+  const itemsById = new Map(items.map(item => [item.id, item]));
+  const activeItem = itemsById.get(activeTab.id);
+  if (!activeItem) {
+    throw new Error("Active tab is not visible to Tree Style Tab.");
+  }
+
+  let folder = isTSTGroupTab(activeItem) ? activeItem : null;
+  if (!folder) {
+    folder = items
+      .filter(item => isTSTGroupTab(item) && collectDescendantTabIds(item).includes(activeTab.id))
+      .sort((a, b) => (b.ancestorTabIds || []).length - (a.ancestorTabIds || []).length)[0];
+  }
+  if (!folder) {
+    throw new Error("Active tab is not inside a Tree Style Tab folder.");
+  }
+
+  const descendantIds = collectDescendantTabIds(folder);
+  const tabsToArchive = descendantIds
+    .map(tabId => itemsById.get(tabId) && itemsById.get(tabId).tab)
+    .filter(tab => tab && tab.url && /^https?:/.test(tab.url))
+    .map(tabPayload);
+  if (!tabsToArchive.length) {
+    throw new Error("Folder does not contain any archiveable HTTP tabs.");
+  }
+
+  const archiveDate = isDateTitle(folder.tab && folder.tab.title) ? folder.tab.title : todayDateTitle();
+  const result = await sendNativeRequest("archive_tabs", {
+    date: archiveDate,
+    tabs: tabsToArchive,
+  });
+
+  if (closeFolder) {
+    const tabIdsToClose = [...descendantIds, folder.id];
+    for (const tabId of tabIdsToClose) {
+      await browser.tabs.remove(tabId).catch(error => {
+        console.warn(`Browser Opt could not close tab ${tabId}`, error);
+      });
+    }
+    await sleep(150);
+    const remainingTabIds = (
+      await Promise.all(tabIdsToClose.map(tabId => browser.tabs.get(tabId).then(tab => tab.id).catch(() => null)))
+    ).filter(Boolean);
+    if (remainingTabIds.length) {
+      await browser.tabs.remove(remainingTabIds);
+    }
+    await snapshotTabs("archive-folder-close");
+  }
+
+  const message = closeFolder
+    ? `Archived and closed ${tabsToArchive.length} tabs from "${folder.tab.title || "folder"}" into ${result.date}.`
+    : `Archived ${tabsToArchive.length} tabs from "${folder.tab.title || "folder"}" into ${result.date}.`;
+  setStatus(String(tabsToArchive.length), "#008000");
   notify("Browser Opt", message);
   console.info(`Browser Opt ${message}`);
   return { message };
@@ -756,6 +853,12 @@ browser.runtime.onMessage.addListener(message => {
   }
   if (message.type === "browser-opt:cleanup-date-groups") {
     return cleanupDateGroupsAndCategories();
+  }
+  if (message.type === "browser-opt:archive-current-folder") {
+    return archiveCurrentFolder();
+  }
+  if (message.type === "browser-opt:archive-and-close-current-folder") {
+    return archiveCurrentFolder({ closeFolder: true });
   }
   if (message.type === "browser-opt:sort-date-groups") {
     return sortDateGroupsNewestFirst();

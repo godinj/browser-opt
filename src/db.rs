@@ -290,6 +290,46 @@ impl Db {
         self.archive_summary(&date)
     }
 
+    pub fn add_tabs_to_archive(
+        &self,
+        date: NaiveDate,
+        tabs: &[IncomingTab],
+    ) -> Result<ArchiveSummary> {
+        let date = date.to_string();
+        let captured_at = now_string();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO daily_archive (archive_date) VALUES (?1)",
+            params![date],
+        )?;
+        let archive_id: i64 = tx.query_row(
+            "SELECT id FROM daily_archive WHERE archive_date = ?1",
+            params![date],
+            |row| row.get(0),
+        )?;
+
+        for tab in tabs
+            .iter()
+            .filter(|tab| tab.url.as_deref().is_some_and(is_http_url))
+        {
+            let url = tab.url.clone().unwrap_or_default();
+            let normalized_url = normalize_url(&url);
+            tx.execute(
+                "INSERT INTO archived_tab (archive_id, url, normalized_url, title, window_id, position, active, pinned, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![archive_id, url, normalized_url, tab.title, tab.window_id, tab.position, bool_int(tab.active), bool_int(tab.pinned), captured_at],
+            )?;
+        }
+
+        tx.execute(
+            "INSERT OR IGNORE INTO archive_visit (archive_id, page_visit_id)
+             SELECT ?1, id FROM page_visit WHERE substr(visited_at, 1, 10) = ?2",
+            params![archive_id, date],
+        )?;
+        tx.commit()?;
+        self.archive_summary(&date)
+    }
+
     pub fn list_archives(&self) -> Result<Vec<ArchiveSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT daily_archive.archive_date,
