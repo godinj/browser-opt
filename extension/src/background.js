@@ -7,6 +7,7 @@ let nextRequestId = 1;
 let suppressTSTMoveFixups = false;
 let pollingOpenRequests = false;
 let popupWindowId = null;
+let lastPopupSource = {};
 const pendingNativeRequests = new Map();
 const POPUP_WIDTH = 380;
 const POPUP_HEIGHT = 520;
@@ -176,6 +177,10 @@ function isTSTGroupTab(item) {
   return Array.isArray(item.states) && item.states.includes("group-tab");
 }
 
+function isTSTFolder(item) {
+  return isTSTGroupTab(item) || Boolean(item.tab && item.tab.url && item.tab.url.includes("/resources/group-tab.html"));
+}
+
 function collectDirectChildren(item) {
   return Array.isArray(item.children) ? item.children.map(child => child.id) : [];
 }
@@ -288,6 +293,15 @@ async function activeTabInActionSource(source = {}) {
 
 async function openPopup(mode = "tabs") {
   const url = browser.runtime.getURL(`popup.html?mode=${encodeURIComponent(mode)}`);
+  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  const [activeTab] = currentWindow
+    ? await browser.tabs.query({ active: true, windowId: currentWindow.id }).catch(() => [])
+    : [];
+  lastPopupSource = {
+    windowId: currentWindow && currentWindow.id,
+    tabId: activeTab && activeTab.id,
+  };
+
   const existingWindow = await findPopupWindow();
   if (existingWindow) {
     popupWindowId = existingWindow.id;
@@ -307,7 +321,6 @@ async function openPopup(mode = "tabs") {
     focused: true,
   };
 
-  const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   if (currentWindow) {
     createProperties.left = Math.round(currentWindow.left + (currentWindow.width - POPUP_WIDTH) / 2);
     createProperties.top = Math.round(currentWindow.top + (currentWindow.height - POPUP_HEIGHT) / 2);
@@ -547,14 +560,32 @@ async function archiveCurrentFolder({ closeFolder = false, source = {} } = {}) {
     throw new Error("Active tab is not visible to Tree Style Tab.");
   }
 
-  let folder = isTSTGroupTab(activeItem) ? activeItem : null;
+  let folder = isTSTFolder(activeItem) ? activeItem : null;
+  if (!folder && activeItem.ancestorTabIds && activeItem.ancestorTabIds.length) {
+    folder = [...activeItem.ancestorTabIds]
+      .reverse()
+      .map(tabId => itemsById.get(tabId))
+      .find(item => item && isTSTFolder(item));
+  }
   if (!folder) {
     folder = items
-      .filter(item => isTSTGroupTab(item) && collectDescendantTabIds(item).includes(activeTab.id))
+      .filter(item => isTSTFolder(item) && collectDescendantTabIds(item).includes(activeTab.id))
       .sort((a, b) => (b.ancestorTabIds || []).length - (a.ancestorTabIds || []).length)[0];
   }
   if (!folder) {
-    throw new Error("Active tab is not inside a Tree Style Tab folder.");
+    folder = items
+      .filter(item => isTSTFolder(item) && item.tab && item.tab.index < activeTab.index)
+      .sort((a, b) => b.tab.index - a.tab.index)[0];
+  }
+  if (!folder) {
+    const activeDetails = [
+      `tab=${activeTab.id}`,
+      `index=${activeTab.index}`,
+      `title=${activeTab.title || ""}`,
+      `ancestors=${(activeItem.ancestorTabIds || []).join(",") || "none"}`,
+      `states=${(activeItem.states || []).join(",") || "none"}`,
+    ].join(" ");
+    throw new Error(`Active tab is not inside a Tree Style Tab folder. ${activeDetails}`);
   }
 
   const descendantIds = collectDescendantTabIds(folder);
@@ -855,10 +886,10 @@ browser.runtime.onMessage.addListener(message => {
     return cleanupDateGroupsAndCategories();
   }
   if (message.type === "browser-opt:archive-current-folder") {
-    return archiveCurrentFolder();
+    return archiveCurrentFolder({ source: lastPopupSource });
   }
   if (message.type === "browser-opt:archive-and-close-current-folder") {
-    return archiveCurrentFolder({ closeFolder: true });
+    return archiveCurrentFolder({ closeFolder: true, source: lastPopupSource });
   }
   if (message.type === "browser-opt:sort-date-groups") {
     return sortDateGroupsNewestFirst();
