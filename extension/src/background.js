@@ -1089,3 +1089,56 @@ browser.windows.onRemoved.addListener(windowId => {
 registerToTST();
 connectNative();
 setInterval(pollOpenRequests, 1000);
+
+// Auto-clear cookies when configured domains return specific status codes.
+// Config stored in browser.storage.local under "cookieClearRules":
+//   [{ domain: "example.com", statusCodes: [400] }]
+const COOKIE_CLEAR_DEFAULTS = [
+  { domain: "manufacture.prod.mes.kbobjects.com", statusCodes: [400] },
+];
+
+let cookieClearRules = [];
+
+async function loadCookieClearRules() {
+  const { cookieClearRules: stored } = await browser.storage.local.get("cookieClearRules");
+  cookieClearRules = stored || COOKIE_CLEAR_DEFAULTS;
+  if (!stored) {
+    await browser.storage.local.set({ cookieClearRules });
+  }
+  registerCookieClearListener();
+}
+
+function registerCookieClearListener() {
+  if (browser.webRequest.onHeadersReceived.hasListener(onCookieClearResponse)) {
+    browser.webRequest.onHeadersReceived.removeListener(onCookieClearResponse);
+  }
+  const urls = cookieClearRules.map(r => `https://${r.domain}/*`);
+  if (!urls.length) return;
+  browser.webRequest.onHeadersReceived.addListener(
+    onCookieClearResponse,
+    { urls, types: ["main_frame"] },
+    []
+  );
+}
+
+async function onCookieClearResponse(details) {
+  const url = new URL(details.url);
+  const rule = cookieClearRules.find(r => r.domain === url.hostname);
+  if (!rule || !rule.statusCodes.includes(details.statusCode)) return;
+  const cookies = await browser.cookies.getAll({ domain: url.hostname });
+  if (!cookies.length) return;
+  for (const cookie of cookies) {
+    await browser.cookies.remove({
+      url: `${url.protocol}//${cookie.domain}${cookie.path}`,
+      name: cookie.name,
+    });
+  }
+  console.info(`Browser Opt cleared ${cookies.length} cookies for ${url.hostname} after ${details.statusCode} response`);
+  browser.tabs.reload(details.tabId);
+}
+
+browser.storage.onChanged.addListener((changes) => {
+  if (changes.cookieClearRules) loadCookieClearRules();
+});
+
+loadCookieClearRules();

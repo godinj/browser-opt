@@ -64,6 +64,8 @@
     "notifications",
     "tabs",
     "webNavigation",
+    "webRequest",
+    "cookies",
     "storage",
     "http://*/*",
     "https://*/*"
