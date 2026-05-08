@@ -6,7 +6,9 @@ if [[ $# -gt 1 ]]; then
   exit 1
 fi
 
-BROWSER_OPT_PATH="${1:-$(pwd)/target/release/browser-opt}"
+BROWSER_OPT_INPUT="${1:-$(pwd)/target/release/browser-opt}"
+BROWSER_OPT_DIR="$(cd "$(dirname "$BROWSER_OPT_INPUT")" && pwd -P)"
+BROWSER_OPT_PATH="$BROWSER_OPT_DIR/$(basename "$BROWSER_OPT_INPUT")"
 if [[ ! -x "$BROWSER_OPT_PATH" ]]; then
   echo "browser-opt executable not found or not executable: $BROWSER_OPT_PATH" >&2
   echo "run: cargo build --release" >&2
