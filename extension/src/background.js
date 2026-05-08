@@ -6,6 +6,7 @@ let reconnectTimer = null;
 let nextRequestId = 1;
 let suppressTSTMoveFixups = false;
 let pollingOpenRequests = false;
+let popupWindowId = null;
 const pendingNativeRequests = new Map();
 const POPUP_WIDTH = 380;
 const POPUP_HEIGHT = 520;
@@ -236,10 +237,41 @@ async function focusTab(tab) {
   await browser.tabs.update(tab.id, { active: true });
 }
 
+function isPopupTab(tab) {
+  return Boolean(tab && tab.url && tab.url.startsWith(browser.runtime.getURL("popup.html")));
+}
+
+async function popupWindowFromId(windowId) {
+  if (!windowId) return null;
+  const popupWindow = await browser.windows.get(windowId, { populate: true }).catch(() => null);
+  if (!popupWindow || !popupWindow.tabs || !popupWindow.tabs.some(isPopupTab)) return null;
+  return popupWindow;
+}
+
+async function findPopupWindow() {
+  const rememberedWindow = await popupWindowFromId(popupWindowId);
+  if (rememberedWindow) return rememberedWindow;
+
+  const popupWindows = await browser.windows.getAll({ populate: true, windowTypes: ["popup"] });
+  return popupWindows.find(window => window.tabs && window.tabs.some(isPopupTab)) || null;
+}
+
 async function openPopup(mode = "tabs") {
+  const url = browser.runtime.getURL(`popup.html?mode=${encodeURIComponent(mode)}`);
+  const existingWindow = await findPopupWindow();
+  if (existingWindow) {
+    popupWindowId = existingWindow.id;
+    const popupTab = existingWindow.tabs.find(isPopupTab);
+    if (popupTab.url !== url) {
+      await browser.tabs.update(popupTab.id, { url, active: true });
+    }
+    await browser.windows.update(existingWindow.id, { focused: true });
+    return;
+  }
+
   const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   const createProperties = {
-    url: browser.runtime.getURL(`popup.html?mode=${encodeURIComponent(mode)}`),
+    url,
     type: "popup",
     width: POPUP_WIDTH,
     height: POPUP_HEIGHT,
@@ -251,7 +283,8 @@ async function openPopup(mode = "tabs") {
     createProperties.top = Math.round(currentWindow.top + (currentWindow.height - POPUP_HEIGHT) / 2);
   }
 
-  await browser.windows.create(createProperties);
+  const popupWindow = await browser.windows.create(createProperties);
+  popupWindowId = popupWindow.id;
 }
 
 async function openUrlUnderToday(url) {
@@ -750,6 +783,12 @@ browser.commands.onCommand.addListener(command => {
     notify("Browser Opt failed", error.message || String(error));
     console.error("Browser Opt failed to open popup", error);
   });
+});
+
+browser.windows.onRemoved.addListener(windowId => {
+  if (windowId === popupWindowId) {
+    popupWindowId = null;
+  }
 });
 
 registerToTST();
