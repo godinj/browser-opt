@@ -23,6 +23,8 @@ cargo build --release
 
 The installer installs `ttyd`, `tmux`, and JetBrainsMono Nerd Font if they are missing, then writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS.
 
+On macOS, the installer also installs and configures Karabiner-Elements so Firefox receives native tab-switching shortcuts from `Option+Tab` and `Option+Shift+Tab`. If macOS prompts for Karabiner permissions, approve them in `System Settings > Privacy & Security`.
+
 ## Load Extension
 
 1. Open `about:debugging#/runtime/this-firefox` in Firefox.
