@@ -953,6 +953,7 @@ browser.commands.onCommand.addListener(command => {
   const modesByCommand = {
     "open-tab-search": "tabs",
     "open-action-search": "actions",
+    "open-archived-tab-search": "history",
   };
   const mode = modesByCommand[command];
   if (!mode) return;

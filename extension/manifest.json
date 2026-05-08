@@ -29,6 +29,13 @@
         "mac": "Command+Shift+Y"
       },
       "description": "Open action search"
+    },
+    "open-archived-tab-search": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+I",
+        "mac": "Command+Shift+I"
+      },
+      "description": "Open archived tab search"
     }
   },
   "content_scripts": [
