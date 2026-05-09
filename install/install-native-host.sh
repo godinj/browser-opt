@@ -238,12 +238,53 @@ EOF
   echo "if macOS prompts for Karabiner permissions, approve them in Privacy & Security"
 }
 
+install_login_startup() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+
+  local launch_agents_dir="$HOME/Library/LaunchAgents"
+  local plist_path="$launch_agents_dir/local.godin.browser-opt.plist"
+
+  mkdir -p "$launch_agents_dir"
+  cat > "$plist_path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.godin.browser-opt</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BROWSER_OPT_PATH</string>
+    <string>doctor</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/browser-opt-startup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/browser-opt-startup.err</string>
+</dict>
+</plist>
+EOF
+
+  if launchctl print "gui/$(id -u)/local.godin.browser-opt" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
+  fi
+  launchctl bootstrap "gui/$(id -u)" "$plist_path"
+  launchctl kickstart -k "gui/$(id -u)/local.godin.browser-opt"
+
+  echo "installed login startup agent: $plist_path"
+}
+
 install_command curl
 install_command unzip
 install_command ttyd
 install_command tmux
 install_nerd_font
 install_firefox_alt_tab_remap
+install_login_startup
 
 case "$(uname -s)" in
   Darwin)
