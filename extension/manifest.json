@@ -57,6 +57,11 @@
       "matches": ["http://*/*", "https://*/*"],
       "js": ["src/content-link-hints.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["src/content-ttyd-keys.js"],
+      "run_at": "document_start"
     }
   ],
   "permissions": [

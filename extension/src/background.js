@@ -278,6 +278,11 @@ async function focusTab(tab) {
   await browser.tabs.update(tab.id, { active: true });
 }
 
+async function focusTerminalTab(tab) {
+  await focusTab(tab);
+  await browser.tabs.sendMessage(tab.id, { type: "browser-opt:focus-ttyd" }).catch(() => {});
+}
+
 function isPopupTab(tab) {
   return Boolean(tab && tab.url && tab.url.startsWith(browser.runtime.getURL("popup.html")));
 }
@@ -356,13 +361,14 @@ async function openTerminal() {
   const tabs = await browser.tabs.query({ url: TERMINAL_MATCH_URL });
   const existingTab = tabs[0];
   if (existingTab) {
-    await focusTab(existingTab);
+    await focusTerminalTab(existingTab);
     return;
   }
 
   const currentWindow = await browser.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   const createProperties = currentWindow ? { url: TERMINAL_URL, windowId: currentWindow.id } : { url: TERMINAL_URL };
-  await browser.tabs.create(createProperties);
+  const tab = await browser.tabs.create(createProperties);
+  await focusTerminalTab(tab);
 }
 
 async function openUrlUnderToday(url) {
