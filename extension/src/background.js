@@ -727,6 +727,62 @@ async function promptForTSTFolderTitle(tab, defaultTitle = "Selected Tabs") {
   return title && title.trim() ? title.trim() : null;
 }
 
+async function promptForTabTitle(tab) {
+  const defaultTitle = tab && tab.title ? tab.title : "";
+  if (typeof window.prompt === "function") {
+    const title = window.prompt("Rename active tab", defaultTitle);
+    return title && title.trim() ? title.trim() : null;
+  }
+
+  const results = await browser.tabs.executeScript(tab.id, {
+    code: `window.prompt(${JSON.stringify("Rename active tab")}, ${JSON.stringify(defaultTitle)})`,
+  });
+  const title = results && results[0];
+  return title && title.trim() ? title.trim() : null;
+}
+
+function isTSTGroupTabUrl(url) {
+  return Boolean(url && url.includes("/resources/group-tab.html"));
+}
+
+function canInjectTabTitleScript(tab) {
+  return Boolean(tab && tab.url && /^https?:/.test(tab.url));
+}
+
+async function renameActiveTab({ source = {}, title } = {}) {
+  setStatus("...", "#6f42c1");
+  const activeTab = await activeTabInActionSource(source);
+  if (!activeTab) {
+    throw new Error("No active tab found.");
+  }
+
+  const newTitle = title && title.trim() ? title.trim() : await promptForTabTitle(activeTab);
+  if (!newTitle) {
+    const message = "Cancelled.";
+    setStatus("", "#666666");
+    return { message };
+  }
+
+  if (isTSTGroupTabUrl(activeTab.url)) {
+    const url = new URL(activeTab.url);
+    url.searchParams.set("title", newTitle);
+    await browser.tabs.update(activeTab.id, { url: url.href });
+  } else if (canInjectTabTitleScript(activeTab)) {
+    await browser.tabs.executeScript(activeTab.id, {
+      code: `document.title = ${JSON.stringify(newTitle)}; true;`,
+    });
+  } else {
+    throw new Error("This tab cannot be renamed. Firefox only allows title overrides on regular HTTP(S) pages; Tree Style Tab folder tabs can be renamed directly.");
+  }
+
+  setStatus("1", "#008000");
+  const message = `Renamed active tab to "${newTitle}".`;
+  notify("Browser Opt", message);
+  console.info(`Browser Opt ${message}`);
+  await snapshotTabs("rename-active-tab");
+  return { message };
+}
+
 async function groupSelectedTabsIntoTSTFolder({ source = {}, title } = {}) {
   setStatus("...", "#6f42c1");
   await registerToTST();
@@ -1038,6 +1094,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "browser-opt:group-selected-tabs") {
     return groupSelectedTabsIntoTSTFolder({ source: lastPopupSource, title: message.title });
   }
+  if (message.type === "browser-opt:rename-active-tab") {
+    return renameActiveTab({ source: lastPopupSource, title: message.title });
+  }
   if (message.type === "browser-opt:sort-date-groups") {
     return sortDateGroupsNewestFirst();
   }
@@ -1074,6 +1133,14 @@ browser.commands.onCommand.addListener(command => {
       setStatus("!", "#d73a49");
       notify("Browser Opt failed", error.message || String(error));
       console.error("Browser Opt failed to group selected tabs", error);
+    });
+    return;
+  }
+  if (command === "rename-active-tab") {
+    renameActiveTab().catch(error => {
+      setStatus("!", "#d73a49");
+      notify("Browser Opt failed", error.message || String(error));
+      console.error("Browser Opt failed to rename active tab", error);
     });
     return;
   }

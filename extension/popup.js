@@ -65,6 +65,13 @@ const actions = [
     promptTitle: true,
   },
   {
+    title: "Rename active tab",
+    description: "Set a custom title for the active tab or Tree Style Tab folder.",
+    type: "browser-opt:rename-active-tab",
+    runningLabel: "Renaming active tab",
+    promptRenameTitle: true,
+  },
+  {
     title: "Merge and sort date folders",
     description: "Deduplicate date folders and sort them newest first.",
     type: "browser-opt:sort-date-groups",
@@ -297,6 +304,14 @@ async function runAction(action) {
   const payload = { type: action.type };
   if (action.promptTitle) {
     const title = window.prompt("Name the Tree Style Tab folder", "Selected Tabs");
+    if (!title || !title.trim()) {
+      status.textContent = "Cancelled.";
+      return;
+    }
+    payload.title = title.trim();
+  }
+  if (action.promptRenameTitle) {
+    const title = window.prompt("Rename active tab", "");
     if (!title || !title.trim()) {
       status.textContent = "Cancelled.";
       return;
