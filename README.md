@@ -39,7 +39,17 @@ On macOS, the installer also installs and configures Karabiner-Elements so Firef
 ./scripts/package-extension.sh
 ```
 
-This writes `dist/browser-opt-<version>.xpi`. For local persistent installs, submit the XPI to Mozilla for unlisted signing, then install the signed XPI in Firefox. For development, temporary loading still works.
+This writes an unsigned development build to `dist/browser-opt-<version>.xpi`.
+
+## Sign Extension
+
+Regular Firefox requires signed XPIs for persistent installs. Create AMO API credentials at `https://addons.mozilla.org/developers/addon/api/key/`, then run:
+
+```bash
+AMO_JWT_ISSUER=... AMO_JWT_SECRET=... ./scripts/sign-extension.sh
+```
+
+This submits the extension for Mozilla unlisted signing and writes the signed XPI to `dist/`. Install that signed XPI from `about:addons` with `Install Add-on From File...`.
 
 ## Load Extension For Development
 
