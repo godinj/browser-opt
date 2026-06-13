@@ -3,6 +3,7 @@ mod firefox;
 mod native_host;
 
 use std::net::{SocketAddr, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration as StdDuration;
@@ -12,6 +13,10 @@ use anyhow::{Context, Result, bail};
 use chrono::{Duration, Local, NaiveDate};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use db::{ArchivedTab, CurrentTab, Db, SearchRow};
+use serde_json::json;
+
+const NATIVE_HOST_NAME: &str = "browser_opt";
+const EXTENSION_ID: &str = "browser-opt@godin.local";
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +35,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Doctor,
+    InstallNativeHost {
+        #[arg(value_name = "PATH")]
+        browser_opt: Option<PathBuf>,
+    },
     NativeHost,
     Search(SearchArgs),
     Fzf(FzfArgs),
@@ -95,12 +104,15 @@ enum RecurringCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db_path = db::resolve_db_path(cli.db)?;
-    if let Err(error) = ensure_ttyd_running() {
+    if !matches!(&cli.command, Commands::InstallNativeHost { .. })
+        && let Err(error) = ensure_ttyd_running()
+    {
         eprintln!("warning: failed to start ttyd: {error:#}");
     }
 
     match cli.command {
         Commands::Doctor => doctor(&db_path),
+        Commands::InstallNativeHost { browser_opt } => install_native_host(browser_opt),
         Commands::NativeHost => native_host::run(&db_path),
         Commands::Search(args) => {
             let db = Db::open(&db_path)?;
@@ -301,7 +313,92 @@ fn doctor(db_path: &PathBuf) -> Result<()> {
             "not found"
         }
     );
+    match native_host_manifest_path() {
+        Ok(path) => println!(
+            "native host manifest: {}",
+            if path.exists() {
+                path.display().to_string()
+            } else {
+                "not installed".to_string()
+            }
+        ),
+        Err(error) => println!("native host manifest: unavailable ({error})"),
+    }
     Ok(())
+}
+
+fn install_native_host(browser_opt: Option<PathBuf>) -> Result<()> {
+    let binary_path = match browser_opt {
+        Some(path) => path,
+        None => env::current_exe().context("failed to locate current executable")?,
+    };
+    let binary_path = canonicalize_existing_executable(&binary_path)?;
+    let manifest_path = native_host_manifest_path()?;
+    let host_dir = manifest_path
+        .parent()
+        .context("native host manifest path has no parent")?;
+    fs::create_dir_all(host_dir)
+        .with_context(|| format!("failed to create {}", host_dir.display()))?;
+
+    let wrapper_path = host_dir.join("browser_opt_host");
+    fs::write(
+        &wrapper_path,
+        format!("#!/usr/bin/env bash\nexec {:?} native-host\n", binary_path),
+    )
+    .with_context(|| format!("failed to write {}", wrapper_path.display()))?;
+    fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("failed to make {} executable", wrapper_path.display()))?;
+
+    let manifest = serde_json::to_string_pretty(&json!({
+        "name": NATIVE_HOST_NAME,
+        "description": "Browser Opt native messaging host",
+        "path": wrapper_path.to_string_lossy(),
+        "type": "stdio",
+        "allowed_extensions": [EXTENSION_ID],
+    }))?;
+    fs::write(&manifest_path, format!("{manifest}\n"))
+        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+
+    println!(
+        "installed native messaging host wrapper: {}",
+        wrapper_path.display()
+    );
+    println!(
+        "installed native messaging host manifest: {}",
+        manifest_path.display()
+    );
+    println!("allowed Firefox extension: {EXTENSION_ID}");
+    Ok(())
+}
+
+fn canonicalize_existing_executable(path: &Path) -> Result<PathBuf> {
+    let path =
+        fs::canonicalize(path).with_context(|| format!("failed to resolve {}", path.display()))?;
+    let metadata =
+        fs::metadata(&path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        bail!(
+            "browser-opt executable not found or not executable: {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn native_host_manifest_path() -> Result<PathBuf> {
+    match env::consts::OS {
+        "macos" => Ok(home_dir()?
+            .join("Library/Application Support/Mozilla/NativeMessagingHosts/browser_opt.json")),
+        "linux" => Ok(home_dir()?.join(".mozilla/native-messaging-hosts/browser_opt.json")),
+        other => bail!("unsupported OS for Firefox native messaging: {other}"),
+    }
+}
+
+fn home_dir() -> Result<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .context("HOME is not set")
 }
 
 fn archive_date(db: &Db, date: NaiveDate) -> Result<()> {

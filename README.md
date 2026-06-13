@@ -18,14 +18,30 @@ cargo build --release
 ## Install Native Host
 
 ```bash
+./target/release/browser-opt install-native-host ./target/release/browser-opt
+```
+
+This writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS. The manifest allows the Firefox extension ID `browser-opt@godin.local` to launch the local `browser-opt native-host` process.
+
+For a full workstation setup, use the helper script:
+
+```bash
 ./install/install-native-host.sh ./target/release/browser-opt
 ```
 
-The installer installs `ttyd`, `tmux`, and JetBrainsMono Nerd Font if they are missing, then writes the Firefox native messaging manifest to the per-user Mozilla directory on Linux or macOS.
+The helper installs `ttyd`, `tmux`, and JetBrainsMono Nerd Font if they are missing, then installs the native host manifest.
 
 On macOS, the installer also installs and configures Karabiner-Elements so Firefox receives native tab-switching shortcuts from `Option+Tab` and `Option+Shift+Tab`. If macOS prompts for Karabiner permissions, approve them in `System Settings > Privacy & Security`.
 
-## Load Extension
+## Package Extension
+
+```bash
+./scripts/package-extension.sh
+```
+
+This writes `dist/browser-opt-<version>.xpi`. For local persistent installs, submit the XPI to Mozilla for unlisted signing, then install the signed XPI in Firefox. For development, temporary loading still works.
+
+## Load Extension For Development
 
 1. Open `about:debugging#/runtime/this-firefox` in Firefox.
 2. Click `Load Temporary Add-on...`.
@@ -76,5 +92,5 @@ By default the database is stored in the platform data directory for `browser-op
 
 - Source-page capture is best effort. Normal clicked links are captured by the content script, but redirects, address-bar navigations, bookmarks, and some SPA behavior may not have a source URL.
 - Duplicate avoidance relies on the last captured `current_tab` snapshot. If Firefox or the extension is not running, this state may be stale.
-- The extension is loaded as a temporary add-on during development.
+- Unsigned extension builds are for development. Persistent Firefox installs require Mozilla signing.
 - Private browsing is not specially handled yet.

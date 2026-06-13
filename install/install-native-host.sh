@@ -300,12 +300,4 @@ case "$(uname -s)" in
 esac
 
 mkdir -p "$HOST_DIR"
-WRAPPER_PATH="$HOST_DIR/browser_opt_host"
-cat > "$WRAPPER_PATH" <<EOF
-#!/usr/bin/env bash
-exec "$BROWSER_OPT_PATH" native-host
-EOF
-chmod +x "$WRAPPER_PATH"
-sed "s#__BT_PATH__#$WRAPPER_PATH#g" "$(dirname "$0")/browser_opt.json.in" > "$HOST_DIR/browser_opt.json"
-echo "installed native messaging host wrapper: $WRAPPER_PATH"
-echo "installed native messaging host manifest: $HOST_DIR/browser_opt.json"
+"$BROWSER_OPT_PATH" install-native-host "$BROWSER_OPT_PATH"
