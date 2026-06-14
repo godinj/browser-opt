@@ -10,6 +10,7 @@ let suppressTSTMoveFixups = false;
 let pollingOpenRequests = false;
 let popupWindowId = null;
 let lastPopupSource = {};
+const tabsBeingCopiedToToday = new Set();
 const pendingNativeRequests = new Map();
 const POPUP_WIDTH = 380;
 const POPUP_HEIGHT = 520;
@@ -273,6 +274,72 @@ async function findDateGroup(windowId, title) {
   return items.find(item => isTSTGroupTab(item) && item.tab && item.tab.title === title);
 }
 
+async function findDateGroupForTab(tab) {
+  if (!tab || tab.id === undefined || tab.windowId === undefined) return null;
+  const items = await getTSTItemsByWindow(tab.windowId);
+  const itemsById = new Map(items.map(item => [item.id, item]));
+  const item = itemsById.get(tab.id);
+  if (!item) return null;
+  if (isTSTGroupTab(item) && isDateTitle(item.tab && item.tab.title)) return item;
+
+  return [...(item.ancestorTabIds || [])]
+    .reverse()
+    .map(tabId => itemsById.get(tabId))
+    .find(ancestor => ancestor && isTSTGroupTab(ancestor) && isDateTitle(ancestor.tab && ancestor.tab.title)) || null;
+}
+
+async function ensureTabUnderToday(tab) {
+  if (!tab || tab.id === undefined || tab.windowId === undefined || isTSTGroupTabUrl(tab.url) || isPopupTab(tab)) {
+    return null;
+  }
+
+  const today = todayDateTitle();
+  await registerToTST();
+  const existingGroup = await findDateGroup(tab.windowId, today);
+  if (existingGroup) {
+    const currentGroup = await findDateGroupForTab(tab).catch(() => null);
+    if (currentGroup && currentGroup.id === existingGroup.id) return existingGroup;
+
+    await attachTabToParent(tab.id, existingGroup.id);
+    await moveTreeToStart(existingGroup.id);
+    return existingGroup;
+  }
+
+  const createdGroup = await browser.runtime.sendMessage(TST_ID, {
+    type: "group-tabs",
+    title: today,
+    tabs: [tab.id],
+    temporary: false,
+    temporaryAggressive: false,
+  });
+  await moveDateGroupToStart(tab.windowId, today).catch(error => {
+    console.warn("Browser Opt could not restore today's TST date group position", error);
+  });
+  return createdGroup || findDateGroup(tab.windowId, today);
+}
+
+async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
+  if (!tab || !tab.url || !/^https?:/.test(tab.url) || tabsBeingCopiedToToday.has(tab.id)) return false;
+
+  tabsBeingCopiedToToday.add(tab.id);
+  try {
+    const currentGroup = await findDateGroupForTab(tab);
+    const today = todayDateTitle();
+    if (!currentGroup || !currentGroup.tab || currentGroup.tab.title === today) return false;
+
+    const copiedTab = await browser.tabs.create({
+      url: tab.url,
+      windowId: tab.windowId,
+      index: tab.index + 1,
+      active,
+    });
+    await ensureTabUnderToday(copiedTab);
+    return true;
+  } finally {
+    tabsBeingCopiedToToday.delete(tab.id);
+  }
+}
+
 async function focusTab(tab) {
   await browser.windows.update(tab.windowId, { focused: true });
   await browser.tabs.update(tab.id, { active: true });
@@ -376,6 +443,9 @@ async function openUrlUnderToday(url) {
   const tabs = await browser.tabs.query({});
   const existing = tabs.find(tab => tab.url && normalizeUrlForMatch(tab.url) === normalizedUrl);
   if (existing) {
+    if (await copyTabToToday(existing, { active: true })) {
+      return "copied-under-today";
+    }
     await focusTab(existing);
     return "focused";
   }
@@ -1016,7 +1086,12 @@ browser.runtime.onMessageExternal.addListener((message, sender) => {
 browser.runtime.onStartup.addListener(() => snapshotTabs("startup"));
 browser.runtime.onInstalled.addListener(() => snapshotTabs("installed"));
 
-browser.tabs.onCreated.addListener(() => snapshotTabs("tab-created"));
+browser.tabs.onCreated.addListener(tab => {
+  snapshotTabs("tab-created");
+  ensureTabUnderToday(tab).catch(error => {
+    console.warn("Browser Opt could not place new tab in today's TST date group", error);
+  });
+});
 browser.tabs.onRemoved.addListener(() => snapshotTabs("tab-removed"));
 browser.tabs.onMoved.addListener(() => snapshotTabs("tab-moved"));
 browser.tabs.onActivated.addListener(() => snapshotTabs("tab-activated"));
@@ -1032,6 +1107,9 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       tabId,
       windowId: tab.windowId,
       transitionType: "tab_complete",
+    });
+    copyTabToToday(tab).catch(error => {
+      console.warn("Browser Opt could not copy refreshed tab to today's TST date group", error);
     });
   }
 });
