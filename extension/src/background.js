@@ -340,6 +340,11 @@ async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
   }
 }
 
+async function placeCompletedTabForToday(tab) {
+  if (await copyTabToToday(tab)) return;
+  await ensureTabUnderToday(tab);
+}
+
 async function focusTab(tab) {
   await browser.windows.update(tab.windowId, { focused: true });
   await browser.tabs.update(tab.id, { active: true });
@@ -1108,8 +1113,8 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       windowId: tab.windowId,
       transitionType: "tab_complete",
     });
-    copyTabToToday(tab).catch(error => {
-      console.warn("Browser Opt could not copy refreshed tab to today's TST date group", error);
+    placeCompletedTabForToday(tab).catch(error => {
+      console.warn("Browser Opt could not place completed tab in today's TST date group", error);
     });
   }
 });
