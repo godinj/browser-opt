@@ -11,6 +11,7 @@ let pollingOpenRequests = false;
 let popupWindowId = null;
 let lastPopupSource = {};
 const tabsBeingCopiedToToday = new Set();
+const newTabsPendingToday = new Set();
 const pendingNativeRequests = new Map();
 const POPUP_WIDTH = 380;
 const POPUP_HEIGHT = 520;
@@ -341,8 +342,39 @@ async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
 }
 
 async function placeCompletedTabForToday(tab) {
+  if (tab && newTabsPendingToday.has(tab.id)) {
+    await ensureTabUnderToday(tab);
+    newTabsPendingToday.delete(tab.id);
+    return;
+  }
   if (await copyTabToToday(tab)) return;
   await ensureTabUnderToday(tab);
+}
+
+async function placeNewTabUnderToday(tabId) {
+  newTabsPendingToday.add(tabId);
+  const delays = [100, 250, 500, 1000, 1500];
+  let lastError = null;
+
+  for (const delay of delays) {
+    await sleep(delay);
+    const tab = await browser.tabs.get(tabId).catch(() => null);
+    if (!tab) {
+      newTabsPendingToday.delete(tabId);
+      return;
+    }
+
+    try {
+      await ensureTabUnderToday(tab);
+      newTabsPendingToday.delete(tabId);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  newTabsPendingToday.delete(tabId);
+  throw lastError || new Error("Timed out placing new tab in today's TST date group");
 }
 
 async function focusTab(tab) {
@@ -1093,7 +1125,7 @@ browser.runtime.onInstalled.addListener(() => snapshotTabs("installed"));
 
 browser.tabs.onCreated.addListener(tab => {
   snapshotTabs("tab-created");
-  ensureTabUnderToday(tab).catch(error => {
+  placeNewTabUnderToday(tab.id).catch(error => {
     console.warn("Browser Opt could not place new tab in today's TST date group", error);
   });
 });
