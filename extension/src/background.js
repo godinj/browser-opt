@@ -6,7 +6,7 @@ const TERMINAL_MATCH_URL = "http://127.0.0.1:7681/*";
 let port = null;
 let reconnectTimer = null;
 let nextRequestId = 1;
-let suppressTSTMoveFixups = false;
+let suppressTSTMoveFixups = 0;
 let pollingOpenRequests = false;
 let popupWindowId = null;
 let lastPopupSource = {};
@@ -302,7 +302,6 @@ async function ensureTabUnderToday(tab) {
     if (currentGroup && currentGroup.id === existingGroup.id) return existingGroup;
 
     await attachTabToParent(tab.id, existingGroup.id);
-    await moveTreeToStart(existingGroup.id);
     return existingGroup;
   }
 
@@ -313,10 +312,19 @@ async function ensureTabUnderToday(tab) {
     temporary: false,
     temporaryAggressive: false,
   });
-  await moveDateGroupToStart(tab.windowId, today).catch(error => {
-    console.warn("Browser Opt could not restore today's TST date group position", error);
-  });
   return createdGroup || findDateGroup(tab.windowId, today);
+}
+
+async function ensureTabUnderTodayAndVerify(tab) {
+  const todayGroup = await ensureTabUnderToday(tab);
+  if (!todayGroup) return null;
+
+  await sleep(500);
+  const currentGroup = await findDateGroupForTab(tab);
+  if (!currentGroup || !currentGroup.tab || currentGroup.tab.title !== todayDateTitle()) {
+    throw new Error(`Tab ${tab.id} was not placed in today's TST date group`);
+  }
+  return currentGroup;
 }
 
 async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
@@ -342,39 +350,48 @@ async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
 }
 
 async function placeCompletedTabForToday(tab) {
-  if (tab && newTabsPendingToday.has(tab.id)) {
-    await ensureTabUnderToday(tab);
-    newTabsPendingToday.delete(tab.id);
+  if (!tab || tab.id === undefined) return;
+
+  if (newTabsPendingToday.has(tab.id)) {
+    try {
+      await placeTabUnderTodayWithRetries(tab.id, tab);
+    } finally {
+      newTabsPendingToday.delete(tab.id);
+    }
     return;
   }
-  if (await copyTabToToday(tab)) return;
-  await ensureTabUnderToday(tab);
+  await placeTabUnderTodayWithRetries(tab.id, tab);
 }
 
-async function placeNewTabUnderToday(tabId) {
-  newTabsPendingToday.add(tabId);
-  const delays = [100, 250, 500, 1000, 1500];
+async function placeTabUnderTodayWithRetries(tabId, initialTab = null) {
+  const delays = [0, 100, 250, 500, 1000, 1500];
   let lastError = null;
 
   for (const delay of delays) {
-    await sleep(delay);
-    const tab = await browser.tabs.get(tabId).catch(() => null);
+    if (delay) await sleep(delay);
+    const tab = delay === 0 && initialTab ? initialTab : await browser.tabs.get(tabId).catch(() => null);
     if (!tab) {
-      newTabsPendingToday.delete(tabId);
       return;
     }
 
     try {
-      await ensureTabUnderToday(tab);
-      newTabsPendingToday.delete(tabId);
+      await ensureTabUnderTodayAndVerify(tab);
       return;
     } catch (error) {
       lastError = error;
     }
   }
 
-  newTabsPendingToday.delete(tabId);
-  throw lastError || new Error("Timed out placing new tab in today's TST date group");
+  throw lastError || new Error(`Timed out placing tab ${tabId} in today's TST date group`);
+}
+
+async function placeNewTabUnderToday(tabId) {
+  newTabsPendingToday.add(tabId);
+  try {
+    await placeTabUnderTodayWithRetries(tabId);
+  } finally {
+    newTabsPendingToday.delete(tabId);
+  }
 }
 
 async function focusTab(tab) {
@@ -591,12 +608,12 @@ async function moveTreeAfter(tabId, referenceTabId) {
 }
 
 async function suppressTSTMoveFixupsWhile(callback) {
-  suppressTSTMoveFixups = true;
+  suppressTSTMoveFixups += 1;
   try {
     return await callback();
   } finally {
     await sleep(250);
-    suppressTSTMoveFixups = false;
+    suppressTSTMoveFixups = Math.max(0, suppressTSTMoveFixups - 1);
   }
 }
 
