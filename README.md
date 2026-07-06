@@ -31,6 +31,17 @@ For a full workstation setup, use the helper script:
 
 The helper installs `ttyd`, `tmux`, and JetBrainsMono Nerd Font if they are missing, then installs the native host manifest.
 
+The native messaging host runs as a Docker service. Firefox launches a small local proxy wrapper from the native messaging manifest, and that proxy forwards messages to the Docker service on `127.0.0.1:8765`. The installer starts the service immediately and installs a login startup task that runs `docker compose up -d` for `docker-compose.yml`.
+
+To start or stop the Docker service manually after installation:
+
+```bash
+~/.local/bin/browser-opt-docker-service up
+~/.local/bin/browser-opt-docker-service down
+```
+
+By default the service mounts the normal Browser Opt data directory and Firefox profile directory. Override them with `BROWSER_OPT_DATA_DIR` or `BROWSER_OPT_FIREFOX_PROFILES` before running Docker Compose directly.
+
 On macOS, the installer also installs and configures Karabiner-Elements so Firefox receives native tab-switching shortcuts from `Option+Tab` and `Option+Shift+Tab`. If macOS prompts for Karabiner permissions, approve them in `System Settings > Privacy & Security`.
 
 ## Package Extension

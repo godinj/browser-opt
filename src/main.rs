@@ -40,6 +40,14 @@ enum Commands {
         browser_opt: Option<PathBuf>,
     },
     NativeHost,
+    NativeHostServer {
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        listen: String,
+    },
+    NativeHostProxy {
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        server: String,
+    },
     Search(SearchArgs),
     Fzf(FzfArgs),
     Archive {
@@ -104,8 +112,13 @@ enum RecurringCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db_path = db::resolve_db_path(cli.db)?;
-    if !matches!(&cli.command, Commands::InstallNativeHost { .. })
-        && let Err(error) = ensure_ttyd_running()
+    if !matches!(
+        &cli.command,
+        Commands::InstallNativeHost { .. }
+            | Commands::NativeHost
+            | Commands::NativeHostServer { .. }
+            | Commands::NativeHostProxy { .. }
+    ) && let Err(error) = ensure_ttyd_running()
     {
         eprintln!("warning: failed to start ttyd: {error:#}");
     }
@@ -114,6 +127,8 @@ fn main() -> Result<()> {
         Commands::Doctor => doctor(&db_path),
         Commands::InstallNativeHost { browser_opt } => install_native_host(browser_opt),
         Commands::NativeHost => native_host::run(&db_path),
+        Commands::NativeHostServer { listen } => native_host::run_server(&db_path, &listen),
+        Commands::NativeHostProxy { server } => native_host::run_proxy(&server),
         Commands::Search(args) => {
             let db = Db::open(&db_path)?;
             if args.archives {
@@ -343,7 +358,10 @@ fn install_native_host(browser_opt: Option<PathBuf>) -> Result<()> {
     let wrapper_path = host_dir.join("browser_opt_host");
     fs::write(
         &wrapper_path,
-        format!("#!/usr/bin/env bash\nexec {:?} native-host\n", binary_path),
+        format!(
+            "#!/usr/bin/env bash\nexec {:?} native-host-proxy\n",
+            binary_path
+        ),
     )
     .with_context(|| format!("failed to write {}", wrapper_path.display()))?;
     fs::set_permissions(&wrapper_path, fs::Permissions::from_mode(0o755))

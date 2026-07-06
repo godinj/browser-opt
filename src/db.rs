@@ -96,6 +96,9 @@ pub fn resolve_db_path(override_path: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = override_path {
         return Ok(path);
     }
+    if let Some(path) = std::env::var_os("BROWSER_OPT_DB") {
+        return Ok(PathBuf::from(path));
+    }
 
     let dirs = ProjectDirs::from("local", "godin", "browser-opt")
         .ok_or_else(|| anyhow!("could not resolve data directory"))?;

@@ -9,6 +9,7 @@ fi
 BROWSER_OPT_INPUT="${1:-$(pwd)/target/release/browser-opt}"
 BROWSER_OPT_DIR="$(cd "$(dirname "$BROWSER_OPT_INPUT")" && pwd -P)"
 BROWSER_OPT_PATH="$BROWSER_OPT_DIR/$(basename "$BROWSER_OPT_INPUT")"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [[ ! -x "$BROWSER_OPT_PATH" ]]; then
   echo "browser-opt executable not found or not executable: $BROWSER_OPT_PATH" >&2
   echo "run: cargo build --release" >&2
@@ -239,15 +240,57 @@ EOF
 }
 
 install_login_startup() {
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    return
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker not found; install Docker Desktop or Docker Engine and rerun this script" >&2
+    exit 1
   fi
 
-  local launch_agents_dir="$HOME/Library/LaunchAgents"
-  local plist_path="$launch_agents_dir/local.godin.browser-opt.plist"
+  local bin_dir="$HOME/.local/bin"
+  local service_script="$bin_dir/browser-opt-docker-service"
+  mkdir -p "$bin_dir"
+  cat > "$service_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
 
-  mkdir -p "$launch_agents_dir"
-  cat > "$plist_path" <<EOF
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH"
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "\$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose "\$@"
+  else
+    echo "docker compose plugin or docker-compose is required" >&2
+    exit 1
+  fi
+}
+
+case "\${1:-up}" in
+  up)
+    compose -f "$REPO_ROOT/docker-compose.yml" up -d --build
+    ;;
+  down)
+    compose -f "$REPO_ROOT/docker-compose.yml" down
+    ;;
+  *)
+    echo "usage: \$0 [up|down]" >&2
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$service_script"
+
+  if ! "$service_script" up; then
+    echo "warning: could not start Docker service now; it will be retried at login" >&2
+  fi
+
+  case "$(uname -s)" in
+    Darwin)
+      local launch_agents_dir="$HOME/Library/LaunchAgents"
+      local plist_path="$launch_agents_dir/local.godin.browser-opt.plist"
+
+      mkdir -p "$launch_agents_dir"
+      cat > "$plist_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -256,8 +299,9 @@ install_login_startup() {
   <string>local.godin.browser-opt</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$BROWSER_OPT_PATH</string>
-    <string>doctor</string>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>$service_script up</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -269,13 +313,43 @@ install_login_startup() {
 </plist>
 EOF
 
-  if launchctl print "gui/$(id -u)/local.godin.browser-opt" >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
-  fi
-  launchctl bootstrap "gui/$(id -u)" "$plist_path"
-  launchctl kickstart -k "gui/$(id -u)/local.godin.browser-opt"
+      if launchctl print "gui/$(id -u)/local.godin.browser-opt" >/dev/null 2>&1; then
+        launchctl bootout "gui/$(id -u)" "$plist_path" >/dev/null 2>&1 || true
+      fi
+      launchctl bootstrap "gui/$(id -u)" "$plist_path"
+      launchctl kickstart -k "gui/$(id -u)/local.godin.browser-opt"
 
-  echo "installed login startup agent: $plist_path"
+      echo "installed login startup agent: $plist_path"
+      ;;
+    Linux)
+      local systemd_user_dir="$HOME/.config/systemd/user"
+      local service_path="$systemd_user_dir/browser-opt-native-host.service"
+      mkdir -p "$systemd_user_dir"
+      cat > "$service_path" <<EOF
+[Unit]
+Description=Browser Opt native host Docker service
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$REPO_ROOT
+ExecStart=$service_script up
+ExecStop=$service_script down
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now browser-opt-native-host.service
+
+      echo "installed user startup service: $service_path"
+      ;;
+    *)
+      echo "unsupported OS: $(uname -s)" >&2
+      exit 1
+      ;;
+  esac
 }
 
 install_command curl

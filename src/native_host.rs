@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::thread;
 
 use anyhow::{Context, Result, bail};
 use chrono::{Local, NaiveDate, TimeZone, Utc};
@@ -34,6 +36,74 @@ pub fn run(db_path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn run_server(db_path: &Path, listen: &str) -> Result<()> {
+    let listener = TcpListener::bind(listen).with_context(|| format!("failed to bind {listen}"))?;
+    eprintln!("browser-opt native host server listening on {listen}");
+
+    for stream in listener.incoming() {
+        let stream = stream.context("failed to accept native host proxy connection")?;
+        let db_path = db_path.to_path_buf();
+        thread::spawn(move || {
+            if let Err(error) = handle_proxy_connection(db_path, stream) {
+                eprintln!("browser-opt native host proxy connection failed: {error:#}");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+pub fn run_proxy(server: &str) -> Result<()> {
+    let mut stream = TcpStream::connect(server)
+        .with_context(|| format!("failed to connect to native host server at {server}"))?;
+    let mut server_reader = BufReader::new(stream.try_clone()?);
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+
+    while let Some(message) = read_message(&mut input)? {
+        serde_json::to_writer(&mut stream, &message)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+
+        let mut response = String::new();
+        if server_reader.read_line(&mut response)? == 0 {
+            bail!("native host server closed the proxy connection");
+        }
+        let response: Value = serde_json::from_str(&response)?;
+        write_message(&mut output, &response)?;
+    }
+
+    Ok(())
+}
+
+fn handle_proxy_connection(db_path: PathBuf, mut stream: TcpStream) -> Result<()> {
+    let db = Db::open(&db_path)?;
+    let mut input = BufReader::new(stream.try_clone()?);
+
+    loop {
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+
+        let message: Value = serde_json::from_str(&line)?;
+        let request_id = message.get("requestId").cloned();
+        let response = match handle_message(&db, message) {
+            Ok(payload) => {
+                json!({ "v": 1, "type": "ack", "ok": true, "requestId": request_id, "payload": payload })
+            }
+            Err(error) => {
+                json!({ "v": 1, "type": "error", "ok": false, "requestId": request_id, "message": error.to_string() })
+            }
+        };
+        serde_json::to_writer(&mut stream, &response)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+    }
 }
 
 fn handle_message(db: &Db, message: Value) -> Result<Value> {

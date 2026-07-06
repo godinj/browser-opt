@@ -1,0 +1,13 @@
+services:
+  native-host:
+    build: .
+    image: browser-opt-native-host:local
+    container_name: browser-opt-native-host
+    restart: unless-stopped
+    environment:
+      BROWSER_OPT_DB: /data/browser-opt.sqlite
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - "${BROWSER_OPT_DATA_DIR:-${HOME}/Library/Application Support/browser-opt}:/data"
+      - "${BROWSER_OPT_FIREFOX_PROFILES:-${HOME}/Library/Application Support/Firefox/Profiles}:/root/Library/Application Support/Firefox/Profiles:ro"
