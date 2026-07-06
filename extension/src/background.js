@@ -444,6 +444,13 @@ async function findPopupWindow() {
   return popupWindows.find(window => window.tabs && window.tabs.some(isPopupTab)) || null;
 }
 
+async function closePopupWindows() {
+  const popupWindows = await browser.windows.getAll({ populate: true, windowTypes: ["popup"] });
+  const browserOptPopupWindows = popupWindows.filter(window => window.tabs && window.tabs.some(isPopupTab));
+  await Promise.all(browserOptPopupWindows.map(window => browser.windows.remove(window.id).catch(() => {})));
+  popupWindowId = null;
+}
+
 async function activeTabInActionSource(source = {}) {
   if (source.tabId) {
     const tab = await browser.tabs.get(source.tabId).catch(() => null);
@@ -1149,8 +1156,18 @@ browser.runtime.onMessageExternal.addListener((message, sender) => {
   return undefined;
 });
 
-browser.runtime.onStartup.addListener(() => snapshotTabs("startup"));
-browser.runtime.onInstalled.addListener(() => snapshotTabs("installed"));
+browser.runtime.onStartup.addListener(() => {
+  closePopupWindows().catch(error => {
+    console.warn("Browser Opt could not close restored popup windows on startup", error);
+  });
+  snapshotTabs("startup");
+});
+browser.runtime.onInstalled.addListener(() => {
+  closePopupWindows().catch(error => {
+    console.warn("Browser Opt could not close restored popup windows on install", error);
+  });
+  snapshotTabs("installed");
+});
 
 browser.tabs.onCreated.addListener(tab => {
   snapshotTabs("tab-created");
@@ -1305,6 +1322,9 @@ browser.windows.onRemoved.addListener(windowId => {
 
 registerToTST();
 connectNative();
+closePopupWindows().catch(error => {
+  console.warn("Browser Opt could not close restored popup windows on load", error);
+});
 setInterval(pollOpenRequests, 1000);
 
 // Auto-clear cookies when configured domains return specific status codes.
