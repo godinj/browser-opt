@@ -12,6 +12,7 @@ let popupWindowId = null;
 let lastPopupSource = {};
 const tabsBeingCopiedToToday = new Set();
 const newTabsPendingToday = new Set();
+const pendingDateGroupCreations = new Map();
 const pendingNativeRequests = new Map();
 const POPUP_WIDTH = 380;
 const POPUP_HEIGHT = 520;
@@ -289,6 +290,35 @@ async function findDateGroupForTab(tab) {
     .find(ancestor => ancestor && isTSTGroupTab(ancestor) && isDateTitle(ancestor.tab && ancestor.tab.title)) || null;
 }
 
+async function findOrCreateDateGroupForTab(tab, title) {
+  const existingGroup = await findDateGroup(tab.windowId, title);
+  if (existingGroup) return existingGroup;
+
+  const creationKey = `${tab.windowId}:${title}`;
+  if (!pendingDateGroupCreations.has(creationKey)) {
+    const creation = (async () => {
+      const existingGroupAfterWait = await findDateGroup(tab.windowId, title);
+      if (existingGroupAfterWait) return existingGroupAfterWait;
+
+      const createdGroup = await browser.runtime.sendMessage(TST_ID, {
+        type: "group-tabs",
+        title,
+        tabs: [tab.id],
+        temporary: false,
+        temporaryAggressive: false,
+      });
+      const dateGroup = createdGroup || await findDateGroup(tab.windowId, title);
+      if (dateGroup) await moveTreeToStartAsRoot(dateGroup.id);
+      return dateGroup;
+    })().finally(() => {
+      pendingDateGroupCreations.delete(creationKey);
+    });
+    pendingDateGroupCreations.set(creationKey, creation);
+  }
+
+  return pendingDateGroupCreations.get(creationKey);
+}
+
 async function ensureTabUnderToday(tab) {
   if (!tab || tab.id === undefined || tab.windowId === undefined || isTSTGroupTabUrl(tab.url) || isPopupTab(tab)) {
     return null;
@@ -296,23 +326,14 @@ async function ensureTabUnderToday(tab) {
 
   const today = todayDateTitle();
   await registerToTST();
-  const existingGroup = await findDateGroup(tab.windowId, today);
-  if (existingGroup) {
-    const currentGroup = await findDateGroupForTab(tab).catch(() => null);
-    if (currentGroup && currentGroup.id === existingGroup.id) return existingGroup;
+  const todayGroup = await findOrCreateDateGroupForTab(tab, today);
+  if (!todayGroup) return null;
 
-    await attachTabToParent(tab.id, existingGroup.id);
-    return existingGroup;
-  }
+  const currentGroup = await findDateGroupForTab(tab).catch(() => null);
+  if (currentGroup && currentGroup.id === todayGroup.id) return todayGroup;
 
-  const createdGroup = await browser.runtime.sendMessage(TST_ID, {
-    type: "group-tabs",
-    title: today,
-    tabs: [tab.id],
-    temporary: false,
-    temporaryAggressive: false,
-  });
-  return createdGroup || findDateGroup(tab.windowId, today);
+  await attachTabToParent(tab.id, todayGroup.id);
+  return todayGroup;
 }
 
 async function ensureTabUnderTodayAndVerify(tab) {
@@ -530,7 +551,7 @@ async function openUrlUnderToday(url) {
       console.warn("Browser Opt could not attach tab to today's TST date group", error);
     }
     try {
-      await moveTreeToStart(dateGroup.id);
+      await moveTreeToStartAsRoot(dateGroup.id);
     } catch (error) {
       console.warn("Browser Opt could not restore today's TST date group position", error);
     }
@@ -539,24 +560,10 @@ async function openUrlUnderToday(url) {
 
   const tab = await browser.tabs.create({ ...createProperties, active: true });
   try {
-    await browser.runtime.sendMessage(TST_ID, {
-      type: "group-tabs",
-      title: today,
-      tabs: [tab.id],
-      temporary: false,
-      temporaryAggressive: false,
-    });
+    await ensureTabUnderToday(tab);
   } catch (error) {
     console.warn("Browser Opt could not create today's TST date group", error);
     return "opened-without-date";
-  }
-
-  if (windowId) {
-    try {
-      await moveDateGroupToStart(windowId, today);
-    } catch (error) {
-      console.warn("Browser Opt could not restore today's TST date group position", error);
-    }
   }
 
   return "opened-under-new-date";
@@ -591,10 +598,15 @@ async function moveTreeToStart(tabId) {
   });
 }
 
+async function moveTreeToStartAsRoot(tabId) {
+  await detachTabFromTree(tabId);
+  await moveTreeToStart(tabId);
+}
+
 async function moveDateGroupToStart(windowId, title) {
   const dateGroup = await findDateGroup(windowId, title);
   if (dateGroup) {
-    await moveTreeToStart(dateGroup.id);
+    await moveTreeToStartAsRoot(dateGroup.id);
   }
 }
 
