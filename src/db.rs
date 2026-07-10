@@ -272,7 +272,7 @@ impl Db {
             |row| row.get(0),
         )?;
         tx.execute(
-            "DELETE FROM archived_tab WHERE archive_id = ?1",
+            "DELETE FROM archived_tab WHERE archive_id = ?1 AND archive_source = 'snapshot'",
             params![archive_id],
         )?;
         tx.execute(
@@ -280,8 +280,10 @@ impl Db {
             params![archive_id],
         )?;
         tx.execute(
-            "INSERT INTO archived_tab (archive_id, url, normalized_url, title, window_id, position, active, pinned, captured_at)
-             SELECT ?1, url, normalized_url, title, window_id, NULL, active, pinned, updated_at FROM current_tab ORDER BY window_id, tab_id",
+            "INSERT OR IGNORE INTO archived_tab (archive_id, url, normalized_url, title, window_id, position, active, pinned, captured_at, archive_source)
+             SELECT ?1, url, normalized_url, title, window_id, NULL, active, pinned, updated_at, 'snapshot'
+             FROM current_tab
+             ORDER BY window_id, tab_id",
             params![archive_id],
         )?;
         tx.execute(
@@ -291,6 +293,19 @@ impl Db {
         )?;
         tx.commit()?;
         self.archive_summary(&date)
+    }
+
+    /// Refresh the automatic portion of one daily archive from an explicit Firefox tab
+    /// snapshot. Manual folder archives for the same day remain untouched.
+    pub fn archive_tab_snapshot(
+        &self,
+        date: NaiveDate,
+        tabs: &[IncomingTab],
+        captured_at: Option<&str>,
+        reason: &str,
+    ) -> Result<ArchiveSummary> {
+        self.replace_current_tabs(tabs, captured_at, reason)?;
+        self.create_archive_for_date(date)
     }
 
     pub fn add_tabs_to_archive(
@@ -318,8 +333,20 @@ impl Db {
             let url = tab.url.clone().unwrap_or_default();
             let normalized_url = normalize_url(&url);
             tx.execute(
-                "INSERT INTO archived_tab (archive_id, url, normalized_url, title, window_id, position, active, pinned, captured_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO archived_tab (archive_id, url, normalized_url, title, window_id, position, active, pinned, captured_at, archive_source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'manual')
+                 ON CONFLICT(archive_id, normalized_url) DO UPDATE SET
+                   url = excluded.url,
+                   title = COALESCE(excluded.title, archived_tab.title),
+                   window_id = excluded.window_id,
+                   position = excluded.position,
+                   active = excluded.active,
+                   pinned = excluded.pinned,
+                   captured_at = CASE
+                     WHEN archived_tab.archive_source = 'manual' THEN archived_tab.captured_at
+                     ELSE excluded.captured_at
+                   END,
+                   archive_source = 'manual'",
                 params![archive_id, url, normalized_url, tab.title, tab.window_id, tab.position, bool_int(tab.active), bool_int(tab.pinned), captured_at],
             )?;
         }
@@ -555,6 +582,60 @@ impl Db {
 
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA)?;
+        let tx = self.conn.unchecked_transaction()?;
+        let has_archive_source: bool = tx.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM pragma_table_info('archived_tab') WHERE name = 'archive_source'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        let has_archive_uniqueness: bool = tx.query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM pragma_index_list('archived_tab')
+               WHERE name = 'idx_archived_tab_archive_normalized_url' AND \"unique\" = 1
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_archive_source {
+            // Existing rows may have come from the manual folder-archive flow. Since the old
+            // schema did not record provenance, preserve them rather than risk deleting them
+            // during the next daily snapshot refresh.
+            tx.execute(
+                "ALTER TABLE archived_tab
+                 ADD COLUMN archive_source TEXT NOT NULL DEFAULT 'manual'
+                 CHECK (archive_source IN ('manual', 'snapshot'))",
+                [],
+            )?;
+        }
+        if !has_archive_source || !has_archive_uniqueness {
+            // The FTS table uses archived_tab as external content. Rebuild it before deletes so
+            // migration also works when an older database's index is absent or out of sync.
+            tx.execute(
+                "INSERT INTO archived_tab_fts(archived_tab_fts) VALUES('rebuild')",
+                [],
+            )?;
+            tx.execute_batch(
+                "DELETE FROM archived_tab
+                 WHERE id IN (
+                   SELECT id
+                   FROM (
+                     SELECT id,
+                            ROW_NUMBER() OVER (
+                              PARTITION BY archive_id, normalized_url
+                              ORDER BY CASE archive_source WHEN 'manual' THEN 0 ELSE 1 END, id
+                            ) AS duplicate_number
+                     FROM archived_tab
+                   )
+                   WHERE duplicate_number > 1
+                 );
+                 CREATE UNIQUE INDEX IF NOT EXISTS idx_archived_tab_archive_normalized_url
+                 ON archived_tab(archive_id, normalized_url);",
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 }
@@ -754,7 +835,9 @@ CREATE TABLE IF NOT EXISTS archived_tab (
   position INTEGER,
   active INTEGER NOT NULL DEFAULT 0,
   pinned INTEGER NOT NULL DEFAULT 0,
-  captured_at TEXT NOT NULL
+  captured_at TEXT NOT NULL,
+  archive_source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (archive_source IN ('manual', 'snapshot'))
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS archived_tab_fts USING fts5(
@@ -816,3 +899,210 @@ CREATE TABLE IF NOT EXISTS open_request (
 
 CREATE INDEX IF NOT EXISTS idx_open_request_handled_at ON open_request(handled_at, id);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> Db {
+        let conn = Connection::open_in_memory().expect("open test database");
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .expect("enable foreign keys");
+        let db = Db { conn };
+        db.migrate().expect("migrate test database");
+        db
+    }
+
+    fn incoming_tab(tab_id: i64, url: &str, title: &str) -> IncomingTab {
+        IncomingTab {
+            tab_id,
+            window_id: 1,
+            url: Some(url.to_string()),
+            title: Some(title.to_string()),
+            active: Some(false),
+            pinned: Some(false),
+            discarded: Some(false),
+            position: Some(tab_id),
+        }
+    }
+
+    #[test]
+    fn manual_archive_is_idempotent_by_normalized_url() {
+        let db = test_db();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let first = incoming_tab(1, "https://Example.com/article#first", "First title");
+        let duplicate = incoming_tab(2, "https://example.com/article#second", "Updated title");
+
+        let first_summary = db
+            .add_tabs_to_archive(date, &[first])
+            .expect("archive first tab");
+        let first_captured_at: String = db
+            .conn
+            .query_row("SELECT captured_at FROM archived_tab", [], |row| row.get(0))
+            .unwrap();
+        let repeat_summary = db
+            .add_tabs_to_archive(date, &[duplicate])
+            .expect("repeat manual archive");
+
+        assert_eq!(first_summary.tab_count, 1);
+        assert_eq!(repeat_summary.tab_count, 1);
+        let (count, source, captured_at): (i64, String, String) = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*), MIN(archive_source), MIN(captured_at) FROM archived_tab",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(source, "manual");
+        assert_eq!(captured_at, first_captured_at);
+    }
+
+    #[test]
+    fn daily_snapshot_refresh_preserves_manual_archives() {
+        let db = test_db();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let manual_url = "https://example.com/manually-archived";
+        db.add_tabs_to_archive(date, &[incoming_tab(1, manual_url, "Manual")])
+            .unwrap();
+        let manual_id: i64 = db
+            .conn
+            .query_row("SELECT id FROM archived_tab", [], |row| row.get(0))
+            .unwrap();
+
+        db.replace_current_tabs(
+            &[
+                incoming_tab(10, manual_url, "Also in snapshot"),
+                incoming_tab(11, "https://example.com/old-snapshot", "Old snapshot"),
+            ],
+            Some("2026-07-10T12:00:00Z"),
+            "test",
+        )
+        .unwrap();
+        assert_eq!(db.create_archive_for_date(date).unwrap().tab_count, 2);
+
+        db.replace_current_tabs(
+            &[incoming_tab(
+                12,
+                "https://example.com/new-snapshot",
+                "New snapshot",
+            )],
+            Some("2026-07-10T13:00:00Z"),
+            "test-refresh",
+        )
+        .unwrap();
+        assert_eq!(db.create_archive_for_date(date).unwrap().tab_count, 2);
+
+        let rows = db.archived_tabs(&date.to_string()).unwrap();
+        let urls = rows.iter().map(|row| row.url.as_str()).collect::<Vec<_>>();
+        assert!(urls.contains(&manual_url));
+        assert!(urls.contains(&"https://example.com/new-snapshot"));
+        assert!(!urls.contains(&"https://example.com/old-snapshot"));
+        assert_eq!(db.search_archives("Manual", 10).unwrap().len(), 1);
+        assert_eq!(db.search_archives("New", 10).unwrap().len(), 1);
+        assert!(db.search_archives("Old", 10).unwrap().is_empty());
+        let (preserved_id, source): (i64, String) = db
+            .conn
+            .query_row(
+                "SELECT id, archive_source FROM archived_tab WHERE normalized_url = ?1",
+                params![normalize_url(manual_url)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved_id, manual_id);
+        assert_eq!(source, "manual");
+    }
+
+    #[test]
+    fn automatic_tab_snapshot_refreshes_the_daily_archive() {
+        let db = test_db();
+        let date = NaiveDate::from_ymd_opt(2026, 7, 10).unwrap();
+        let manual_url = "https://example.com/manual";
+        db.add_tabs_to_archive(date, &[incoming_tab(1, manual_url, "Manual")])
+            .unwrap();
+
+        db.archive_tab_snapshot(
+            date,
+            &[incoming_tab(2, "https://example.com/old", "Old")],
+            Some("2026-07-10T12:00:00Z"),
+            "daily-archive-test",
+        )
+        .unwrap();
+        let summary = db
+            .archive_tab_snapshot(
+                date,
+                &[incoming_tab(3, "https://example.com/new", "New")],
+                Some("2026-07-10T23:55:00Z"),
+                "daily-archive-test",
+            )
+            .unwrap();
+
+        assert_eq!(summary.tab_count, 2);
+        let rows = db.archived_tabs(&date.to_string()).unwrap();
+        let urls = rows.iter().map(|row| row.url.as_str()).collect::<Vec<_>>();
+        assert!(urls.contains(&manual_url));
+        assert!(urls.contains(&"https://example.com/new"));
+        assert!(!urls.contains(&"https://example.com/old"));
+        assert_eq!(db.current_tabs(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migration_preserves_and_deduplicates_legacy_archive_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE daily_archive (
+               id INTEGER PRIMARY KEY,
+               archive_date TEXT NOT NULL UNIQUE,
+               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               note TEXT
+             );
+             CREATE TABLE archived_tab (
+               id INTEGER PRIMARY KEY,
+               archive_id INTEGER NOT NULL REFERENCES daily_archive(id) ON DELETE CASCADE,
+               url TEXT NOT NULL,
+               normalized_url TEXT NOT NULL,
+               title TEXT,
+               window_id INTEGER,
+               position INTEGER,
+               active INTEGER NOT NULL DEFAULT 0,
+               pinned INTEGER NOT NULL DEFAULT 0,
+               captured_at TEXT NOT NULL
+             );
+             INSERT INTO daily_archive (id, archive_date) VALUES (1, '2026-07-10');
+             INSERT INTO archived_tab
+               (archive_id, url, normalized_url, title, captured_at)
+             VALUES
+               (1, 'https://example.com/page#one', 'https://example.com/page', 'First', '2026-07-10T12:00:00Z'),
+               (1, 'https://example.com/page#two', 'https://example.com/page', 'Duplicate', '2026-07-10T13:00:00Z');",
+        )
+        .unwrap();
+        let db = Db { conn };
+
+        db.migrate().expect("migrate legacy archive schema");
+
+        let (count, source): (i64, String) = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*), MIN(archive_source) FROM archived_tab",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(source, "manual");
+        assert_eq!(db.search_archives("First", 10).unwrap().len(), 1);
+
+        db.add_tabs_to_archive(
+            NaiveDate::from_ymd_opt(2026, 7, 10).unwrap(),
+            &[incoming_tab(
+                3,
+                "https://example.com/page#new-fragment",
+                "Updated",
+            )],
+        )
+        .unwrap();
+        assert!(db.search_archives("First", 10).unwrap().is_empty());
+        assert_eq!(db.search_archives("Updated", 10).unwrap().len(), 1);
+    }
+}

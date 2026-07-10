@@ -151,6 +151,31 @@ fn handle_message(db: &Db, message: Value) -> Result<Value> {
                 "visitCount": summary.visit_count,
             }))
         }
+        "archive_tab_snapshot" => {
+            let tabs = payload.get("tabs").cloned().context("missing tabs")?;
+            let tabs: Vec<IncomingTab> = serde_json::from_value(tabs)?;
+            let date = payload
+                .get("date")
+                .and_then(Value::as_str)
+                .map(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d"))
+                .transpose()
+                .context("invalid archive date")?
+                .unwrap_or_else(|| Local::now().date_naive());
+            let captured_at = payload
+                .get("captured_at")
+                .or_else(|| payload.get("capturedAt"))
+                .and_then(Value::as_str);
+            let reason = payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("daily-archive");
+            let summary = db.archive_tab_snapshot(date, &tabs, captured_at, reason)?;
+            Ok(json!({
+                "date": summary.date,
+                "tabCount": summary.tab_count,
+                "visitCount": summary.visit_count,
+            }))
+        }
         "link_click_hint" => {
             db.insert_link_hint(payload)?;
             Ok(json!(null))
