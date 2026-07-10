@@ -3,6 +3,12 @@
   "name": "Browser Opt",
   "version": "0.1.5",
   "description": "Local-first browser activity and tab archive capture.",
+  "icons": {
+    "16": "icons/browser-opt.svg",
+    "32": "icons/browser-opt.svg",
+    "48": "icons/browser-opt.svg",
+    "96": "icons/browser-opt.svg"
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "browser-opt@godin.local",
@@ -13,7 +19,11 @@
     "scripts": ["src/background.js"]
   },
   "browser_action": {
-    "default_title": "Browser Opt"
+    "default_title": "Browser Opt",
+    "default_icon": {
+      "16": "icons/browser-opt.svg",
+      "32": "icons/browser-opt.svg"
+    }
   },
   "commands": {
     "open-tab-search": {
@@ -72,6 +82,7 @@
     }
   ],
   "permissions": [
+    "alarms",
     "nativeMessaging",
     "notifications",
     "tabs",

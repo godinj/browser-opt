@@ -86,6 +86,14 @@ browser-opt recurring open work
 
 Use `--db ./dev.sqlite` with any command to work against a development database.
 
+## Daily tab archives
+
+While Firefox is running, Browser Opt refreshes a local daily snapshot of normal,
+non-private HTTP(S) tabs at 23:55 local time. It also creates or refreshes today's
+snapshot when Firefox starts, so a missed alarm is caught up the next time the
+extension runs. Automatic snapshots replace only their own rows; tabs saved with
+the **Archive selected folders** action remain in the archive.
+
 ## Web Terminal
 
 When `browser-opt` starts, it also starts a local `ttyd` server in the background if one is not already listening on `127.0.0.1:7681`.

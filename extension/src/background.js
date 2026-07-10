@@ -10,12 +10,18 @@ let suppressTSTMoveFixups = 0;
 let pollingOpenRequests = false;
 let popupWindowId = null;
 let lastPopupSource = {};
+let tstRegistered = false;
+let tstRegistrationPromise = null;
 const tabsBeingCopiedToToday = new Set();
-const newTabsPendingToday = new Set();
 const pendingDateGroupCreations = new Map();
 const pendingNativeRequests = new Map();
-const POPUP_WIDTH = 380;
-const POPUP_HEIGHT = 520;
+const todayPlacementQueues = new Map();
+const POPUP_WIDTH = 420;
+const POPUP_HEIGHT = 620;
+const DAILY_ARCHIVE_ALARM = "browser-opt-daily-tab-archive";
+const DAILY_ARCHIVE_HOUR = 23;
+const DAILY_ARCHIVE_MINUTE = 55;
+let dailyArchiveInFlight = false;
 
 function setStatus(text, color = "#666666") {
   browser.browserAction.setBadgeText({ text });
@@ -125,6 +131,60 @@ async function snapshotTabs(reason) {
   });
 }
 
+function nextDailyArchiveTime(now = new Date()) {
+  const next = new Date(now);
+  next.setHours(DAILY_ARCHIVE_HOUR, DAILY_ARCHIVE_MINUTE, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+function scheduleDailyTabArchive() {
+  const when = nextDailyArchiveTime();
+  browser.alarms.create(DAILY_ARCHIVE_ALARM, { when: when.getTime() });
+  console.info(`Browser Opt scheduled the next daily tab archive for ${when.toString()}`);
+}
+
+async function currentArchivableTabs() {
+  const windows = await browser.windows.getAll({
+    populate: true,
+    windowTypes: ["normal"],
+  });
+  return windows.flatMap(window => (window.tabs || [])
+    .filter(tab => !window.incognito && !tab.incognito && /^https?:/i.test(tab.url || ""))
+    .map(tabPayload));
+}
+
+async function archiveDailyTabSnapshot(reason) {
+  if (dailyArchiveInFlight) return null;
+  dailyArchiveInFlight = true;
+  try {
+    const tabs = await currentArchivableTabs();
+    if (!tabs.length) {
+      console.info("Browser Opt skipped the daily tab archive because there were no eligible tabs");
+      return null;
+    }
+    const archived = await sendNativeRequest("archive_tab_snapshot", {
+      date: todayDateTitle(),
+      capturedAt: new Date().toISOString(),
+      reason,
+      tabs,
+    });
+    console.info(
+      `Browser Opt refreshed daily archive ${archived.date}: ${archived.tabCount} tabs, ${archived.visitCount} visits`
+    );
+    return archived;
+  } finally {
+    dailyArchiveInFlight = false;
+  }
+}
+
+function startDailyTabArchiveSchedule(reason) {
+  scheduleDailyTabArchive();
+  archiveDailyTabSnapshot(`daily-archive-${reason}`).catch(error => {
+    console.warn("Browser Opt could not run its daily tab archive", error);
+  });
+}
+
 function tabPayload(tab) {
   return {
     tabId: tab.id,
@@ -208,6 +268,8 @@ async function getTSTItemsByWindow(windowId) {
   const treeItems = await browser.runtime.sendMessage(TST_ID, {
     type: "get-light-tree",
     window: windowId,
+    // TST otherwise may return only the visible/root subset. Archiving and
+    // folder discovery need descendants as well as their folder headers.
     tabs: "*",
   });
   const tabs = await browser.tabs.query({ windowId });
@@ -225,7 +287,8 @@ async function getTSTItemsByWindow(windowId) {
     }
   };
 
-  for (const item of treeItems || []) {
+  const rootItems = Array.isArray(treeItems) ? treeItems : (treeItems ? [treeItems] : []);
+  for (const item of rootItems) {
     visit(item);
   }
 
@@ -263,6 +326,10 @@ async function detachTabFromTree(tabId) {
   }
 }
 
+async function detachTabsFromTree(tabIds) {
+  await Promise.all(tabIds.map(tabId => detachTabFromTree(tabId)));
+}
+
 async function attachTabToParent(childId, parentId) {
   await browser.runtime.sendMessage(TST_ID, {
     type: "attach",
@@ -271,14 +338,14 @@ async function attachTabToParent(childId, parentId) {
   });
 }
 
-async function findDateGroup(windowId, title) {
-  const items = await getTSTItemsByWindow(windowId);
+async function findDateGroup(windowId, title, items = null) {
+  items = items || await getTSTItemsByWindow(windowId);
   return items.find(item => isTSTGroupTab(item) && item.tab && item.tab.title === title);
 }
 
-async function findDateGroupForTab(tab) {
+async function findDateGroupForTab(tab, items = null) {
   if (!tab || tab.id === undefined || tab.windowId === undefined) return null;
-  const items = await getTSTItemsByWindow(tab.windowId);
+  items = items || await getTSTItemsByWindow(tab.windowId);
   const itemsById = new Map(items.map(item => [item.id, item]));
   const item = itemsById.get(tab.id);
   if (!item) return null;
@@ -290,16 +357,13 @@ async function findDateGroupForTab(tab) {
     .find(ancestor => ancestor && isTSTGroupTab(ancestor) && isDateTitle(ancestor.tab && ancestor.tab.title)) || null;
 }
 
-async function findOrCreateDateGroupForTab(tab, title) {
-  const existingGroup = await findDateGroup(tab.windowId, title);
+async function findOrCreateDateGroupForTab(tab, title, items = null) {
+  const existingGroup = await findDateGroup(tab.windowId, title, items);
   if (existingGroup) return existingGroup;
 
   const creationKey = `${tab.windowId}:${title}`;
   if (!pendingDateGroupCreations.has(creationKey)) {
     const creation = (async () => {
-      const existingGroupAfterWait = await findDateGroup(tab.windowId, title);
-      if (existingGroupAfterWait) return existingGroupAfterWait;
-
       const createdGroup = await browser.runtime.sendMessage(TST_ID, {
         type: "group-tabs",
         title,
@@ -320,36 +384,25 @@ async function findOrCreateDateGroupForTab(tab, title) {
 }
 
 async function ensureTabUnderToday(tab) {
-  if (!tab || tab.id === undefined || tab.windowId === undefined || isTSTGroupTabUrl(tab.url) || isPopupTab(tab)) {
+  if (!await isEligibleForAutomaticDateGrouping(tab)) {
     return null;
   }
 
   const today = todayDateTitle();
   await registerToTST();
-  const todayGroup = await findOrCreateDateGroupForTab(tab, today);
-  if (!todayGroup) return null;
+  const items = await getTSTItemsByWindow(tab.windowId);
+  const currentGroup = await findDateGroupForTab(tab, items);
+  if (currentGroup && currentGroup.tab && currentGroup.tab.title === today) return currentGroup;
 
-  const currentGroup = await findDateGroupForTab(tab).catch(() => null);
-  if (currentGroup && currentGroup.id === todayGroup.id) return todayGroup;
+  const todayGroup = await findOrCreateDateGroupForTab(tab, today, items);
+  if (!todayGroup) return null;
 
   await attachTabToParent(tab.id, todayGroup.id);
   return todayGroup;
 }
 
-async function ensureTabUnderTodayAndVerify(tab) {
-  const todayGroup = await ensureTabUnderToday(tab);
-  if (!todayGroup) return null;
-
-  await sleep(500);
-  const currentGroup = await findDateGroupForTab(tab);
-  if (!currentGroup || !currentGroup.tab || currentGroup.tab.title !== todayDateTitle()) {
-    throw new Error(`Tab ${tab.id} was not placed in today's TST date group`);
-  }
-  return currentGroup;
-}
-
 async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
-  if (!tab || !tab.url || !/^https?:/.test(tab.url) || tabsBeingCopiedToToday.has(tab.id)) return false;
+  if (!await isEligibleForAutomaticDateGrouping(tab) || tabsBeingCopiedToToday.has(tab.id)) return false;
 
   tabsBeingCopiedToToday.add(tab.id);
   try {
@@ -370,49 +423,57 @@ async function copyTabToToday(tab, { active = tab && tab.active } = {}) {
   }
 }
 
-async function placeCompletedTabForToday(tab) {
-  if (!tab || tab.id === undefined) return;
+async function isEligibleForAutomaticDateGrouping(tab) {
+  if (!tab || tab.id === undefined || tab.windowId === undefined) return false;
+  if (tab.pinned || tab.incognito || !tab.url || !/^https?:/i.test(tab.url)) return false;
+  if (isTSTGroupTabUrl(tab.url) || isPopupTab(tab)) return false;
 
-  if (newTabsPendingToday.has(tab.id)) {
-    try {
-      await placeTabUnderTodayWithRetries(tab.id, tab);
-    } finally {
-      newTabsPendingToday.delete(tab.id);
-    }
-    return;
-  }
-  await placeTabUnderTodayWithRetries(tab.id, tab);
+  const window = await browser.windows.get(tab.windowId).catch(() => null);
+  return Boolean(window && window.type === "normal" && !window.incognito);
 }
 
-async function placeTabUnderTodayWithRetries(tabId, initialTab = null) {
-  const delays = [0, 100, 250, 500, 1000, 1500];
-  let lastError = null;
-
-  for (const delay of delays) {
-    if (delay) await sleep(delay);
-    const tab = delay === 0 && initialTab ? initialTab : await browser.tabs.get(tabId).catch(() => null);
-    if (!tab) {
-      return;
-    }
-
-    try {
-      await ensureTabUnderTodayAndVerify(tab);
-      return;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError || new Error(`Timed out placing tab ${tabId} in today's TST date group`);
-}
-
-async function placeNewTabUnderToday(tabId) {
-  newTabsPendingToday.add(tabId);
+async function drainTodayPlacementQueue(windowId, queue) {
   try {
-    await placeTabUnderTodayWithRetries(tabId);
+    while (queue.pendingTabIds.size) {
+      const tabIds = [...queue.pendingTabIds];
+      queue.pendingTabIds.clear();
+      for (const pendingTabId of tabIds) {
+        const tab = await browser.tabs.get(pendingTabId).catch(() => null);
+        if (!tab) continue;
+        try {
+          await ensureTabUnderToday(tab);
+        } catch (error) {
+          console.warn(`Browser Opt could not place tab ${pendingTabId} in today's TST date group`, error);
+        }
+      }
+    }
   } finally {
-    newTabsPendingToday.delete(tabId);
+    queue.running = false;
+    if (queue.pendingTabIds.size) {
+      queue.running = true;
+      drainTodayPlacementQueue(windowId, queue).catch(error => {
+        console.error("Browser Opt date-group placement queue failed", error);
+      });
+    } else if (todayPlacementQueues.get(windowId) === queue) {
+      todayPlacementQueues.delete(windowId);
+    }
   }
+}
+
+function queueTabForToday(tabId, windowId) {
+  if (tabId === undefined || windowId === undefined) return;
+  let queue = todayPlacementQueues.get(windowId);
+  if (!queue) {
+    queue = { pendingTabIds: new Set(), running: false };
+    todayPlacementQueues.set(windowId, queue);
+  }
+  queue.pendingTabIds.add(tabId);
+  if (queue.running) return;
+
+  queue.running = true;
+  drainTodayPlacementQueue(windowId, queue).catch(error => {
+    console.error("Browser Opt date-group placement queue failed", error);
+  });
 }
 
 async function focusTab(tab) {
@@ -705,9 +766,7 @@ async function cleanupDateGroupsAndCategories() {
     });
 
     for (const category of categoryItems) {
-      for (const childId of collectDirectChildren(category)) {
-        await detachTabFromTree(childId);
-      }
+      await detachTabsFromTree(collectDirectChildren(category));
     }
 
     await sleep(100);
@@ -743,11 +802,6 @@ function findFolderForTab(tab, items, itemsById) {
     folder = items
       .filter(item => isTSTFolder(item) && collectDescendantTabIds(item).includes(tab.id))
       .sort((a, b) => (b.ancestorTabIds || []).length - (a.ancestorTabIds || []).length)[0];
-  }
-  if (!folder) {
-    folder = items
-      .filter(item => isTSTFolder(item) && item.tab && item.tab.index < tab.index)
-      .sort((a, b) => b.tab.index - a.tab.index)[0];
   }
   return folder || null;
 }
@@ -1079,17 +1133,32 @@ async function sortDateGroupsNewestFirst() {
   return { message };
 }
 
-async function registerToTST() {
-  try {
-    await browser.runtime.sendMessage(TST_ID, {
-      type: "register-self",
-      name: browser.runtime.getManifest().name,
-      listeningTypes: ["ready", "permissions-changed", "try-fixup-tree-on-tab-moved"],
-      permissions: ["tabs"],
-    });
-  } catch (error) {
-    console.warn("Tree Style Tab is not available", error);
-  }
+async function registerToTST({ force = false } = {}) {
+  if (tstRegistered && !force) return true;
+  if (tstRegistrationPromise) return tstRegistrationPromise;
+
+  tstRegistrationPromise = (async () => {
+    try {
+      await browser.runtime.sendMessage(TST_ID, {
+        type: "register-self",
+        name: browser.runtime.getManifest().name,
+        listeningTypes: ["ready", "permissions-changed", "new-tab-processed", "try-fixup-tree-on-tab-moved"],
+        permissions: ["tabs"],
+        lightTree: true,
+        allowBulkMessaging: true,
+      });
+      tstRegistered = true;
+      return true;
+    } catch (error) {
+      tstRegistered = false;
+      console.warn("Tree Style Tab is not available", error);
+      return false;
+    } finally {
+      tstRegistrationPromise = null;
+    }
+  })();
+
+  return tstRegistrationPromise;
 }
 
 async function groupTabsByLastAccessedDate() {
@@ -1138,22 +1207,52 @@ async function groupTabsByLastAccessedDate() {
   console.info(`Browser Opt grouped ${groupedTabs} tabs into ${groupCount} date groups`);
 }
 
-browser.runtime.onMessageExternal.addListener((message, sender) => {
-  if (sender.id !== TST_ID) return;
-  if (message && message.messages) {
-    for (const oneMessage of message.messages) {
-      if (oneMessage.type === "try-fixup-tree-on-tab-moved" && suppressTSTMoveFixups) {
-        return Promise.resolve(true);
+function tabDetailsFromTSTMessage(message) {
+  if (!message) return null;
+  const messageTab = message.tab;
+  const tabId = typeof messageTab === "number"
+    ? messageTab
+    : (messageTab && messageTab.id !== undefined ? messageTab.id : message.tabId);
+  const windowId = message.windowId !== undefined
+    ? message.windowId
+    : (messageTab && messageTab.windowId);
+  return tabId === undefined ? null : { tabId, windowId };
+}
+
+function handleTSTExternalMessage(message) {
+  if (!message) return false;
+  if (message.type === "try-fixup-tree-on-tab-moved" && suppressTSTMoveFixups) {
+    return true;
+  }
+  if (message.type === "ready" || message.type === "permissions-changed") {
+    tstRegistered = false;
+    registerToTST({ force: true });
+  }
+  if (message.type === "new-tab-processed") {
+    const details = tabDetailsFromTSTMessage(message);
+    if (details) {
+      if (details.windowId !== undefined) {
+        queueTabForToday(details.tabId, details.windowId);
+      } else {
+        browser.tabs.get(details.tabId).then(tab => {
+          queueTabForToday(tab.id, tab.windowId);
+        }).catch(() => {});
       }
     }
   }
-  if (message && message.type === "try-fixup-tree-on-tab-moved" && suppressTSTMoveFixups) {
-    return Promise.resolve(true);
+  return false;
+}
+
+browser.runtime.onMessageExternal.addListener((message, sender) => {
+  if (sender.id !== TST_ID) return;
+  if (message && message.messages) {
+    let suppressFixup = false;
+    for (const oneMessage of message.messages) {
+      suppressFixup = handleTSTExternalMessage(oneMessage) || suppressFixup;
+    }
+    return suppressFixup ? Promise.resolve(true) : undefined;
   }
-  if (message && (message.type === "ready" || message.type === "permissions-changed")) {
-    registerToTST();
-  }
-  return undefined;
+  return handleTSTExternalMessage(message) ? Promise.resolve(true) : undefined;
 });
 
 browser.runtime.onStartup.addListener(() => {
@@ -1161,19 +1260,25 @@ browser.runtime.onStartup.addListener(() => {
     console.warn("Browser Opt could not close restored popup windows on startup", error);
   });
   snapshotTabs("startup");
+  startDailyTabArchiveSchedule("startup");
 });
 browser.runtime.onInstalled.addListener(() => {
   closePopupWindows().catch(error => {
     console.warn("Browser Opt could not close restored popup windows on install", error);
   });
   snapshotTabs("installed");
+  startDailyTabArchiveSchedule("installed");
+});
+
+browser.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== DAILY_ARCHIVE_ALARM) return;
+  archiveDailyTabSnapshot("daily-archive-alarm")
+    .catch(error => console.warn("Browser Opt could not run its daily tab archive", error))
+    .finally(scheduleDailyTabArchive);
 });
 
 browser.tabs.onCreated.addListener(tab => {
   snapshotTabs("tab-created");
-  placeNewTabUnderToday(tab.id).catch(error => {
-    console.warn("Browser Opt could not place new tab in today's TST date group", error);
-  });
 });
 browser.tabs.onRemoved.addListener(() => snapshotTabs("tab-removed"));
 browser.tabs.onMoved.addListener(() => snapshotTabs("tab-moved"));
@@ -1182,7 +1287,10 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.title || changeInfo.status === "complete") {
     snapshotTabs("tab-updated");
   }
-  if (changeInfo.status === "complete" && tab.url && /^https?:/.test(tab.url)) {
+  if (changeInfo.status === "complete" && tab.url && /^https?:/i.test(tab.url)) {
+    queueTabForToday(tab.id, tab.windowId);
+  }
+  if (changeInfo.status === "complete" && tab.url && /^https?:/i.test(tab.url)) {
     sendNative("visit", {
       url: tab.url,
       title: tab.title,
@@ -1190,9 +1298,6 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       tabId,
       windowId: tab.windowId,
       transitionType: "tab_complete",
-    });
-    placeCompletedTabForToday(tab).catch(error => {
-      console.warn("Browser Opt could not place completed tab in today's TST date group", error);
     });
   }
 });
@@ -1239,6 +1344,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       query: message.query || "",
       limit: message.limit || 50,
     });
+  }
+  if (message.type === "browser-opt:popup-source") {
+    return Promise.resolve({ ...lastPopupSource });
   }
   if (message.type === "browser-opt:open-url") {
     return openUrlUnderToday(message.url).then(result => ({ result }));
@@ -1315,6 +1423,7 @@ browser.commands.onCommand.addListener(command => {
 });
 
 browser.windows.onRemoved.addListener(windowId => {
+  todayPlacementQueues.delete(windowId);
   if (windowId === popupWindowId) {
     popupWindowId = null;
   }
