@@ -15,6 +15,7 @@ let tstRegistrationPromise = null;
 const tabsBeingCopiedToToday = new Set();
 const pendingDateGroupCreations = new Map();
 const pendingNativeRequests = new Map();
+const pendingTabFocusRestorations = new Map();
 const todayPlacementQueues = new Map();
 const POPUP_WIDTH = 420;
 const POPUP_HEIGHT = 620;
@@ -338,6 +339,50 @@ async function attachTabToParent(childId, parentId) {
   });
 }
 
+function guardActiveTabDuringAttach(tab, parentId) {
+  if (!tab || !tab.active || tab.id === undefined || tab.windowId === undefined) return;
+
+  const restoration = {
+    tabId: tab.id,
+    parentId,
+    expiresAt: Date.now() + 5000,
+  };
+  pendingTabFocusRestorations.set(tab.windowId, restoration);
+  setTimeout(() => {
+    if (pendingTabFocusRestorations.get(tab.windowId) === restoration) {
+      pendingTabFocusRestorations.delete(tab.windowId);
+    }
+  }, 5000);
+}
+
+function cancelPendingTabFocusRestoration(windowId) {
+  if (windowId !== undefined) pendingTabFocusRestorations.delete(windowId);
+}
+
+function restoreTabFocusAfterAttach(activeInfo) {
+  const restoration = pendingTabFocusRestorations.get(activeInfo.windowId);
+  if (!restoration) return;
+  if (Date.now() > restoration.expiresAt) {
+    pendingTabFocusRestorations.delete(activeInfo.windowId);
+    return;
+  }
+
+  if (activeInfo.tabId === restoration.tabId) return;
+  if (activeInfo.tabId !== restoration.parentId) {
+    pendingTabFocusRestorations.delete(activeInfo.windowId);
+    return;
+  }
+
+  browser.tabs.query({ active: true, windowId: activeInfo.windowId }).then(([activeTab]) => {
+    if (pendingTabFocusRestorations.get(activeInfo.windowId) !== restoration) return;
+    if (!activeTab || activeTab.id !== restoration.parentId) return;
+    return browser.tabs.update(restoration.tabId, { active: true });
+  }).catch(error => {
+    pendingTabFocusRestorations.delete(activeInfo.windowId);
+    console.warn(`Browser Opt could not restore focus to tab ${restoration.tabId}`, error);
+  });
+}
+
 async function findDateGroup(windowId, title, items = null) {
   items = items || await getTSTItemsByWindow(windowId);
   return items.find(item => isTSTGroupTab(item) && item.tab && item.tab.title === title);
@@ -397,6 +442,8 @@ async function ensureTabUnderToday(tab) {
   const todayGroup = await findOrCreateDateGroupForTab(tab, today, items);
   if (!todayGroup) return null;
 
+  const currentTab = await browser.tabs.get(tab.id).catch(() => null);
+  guardActiveTabDuringAttach(currentTab, todayGroup.id);
   await attachTabToParent(tab.id, todayGroup.id);
   return todayGroup;
 }
@@ -1142,7 +1189,7 @@ async function registerToTST({ force = false } = {}) {
       await browser.runtime.sendMessage(TST_ID, {
         type: "register-self",
         name: browser.runtime.getManifest().name,
-        listeningTypes: ["ready", "permissions-changed", "new-tab-processed", "try-fixup-tree-on-tab-moved"],
+        listeningTypes: ["ready", "permissions-changed", "new-tab-processed", "tab-clicked", "try-fixup-tree-on-tab-moved"],
         permissions: ["tabs"],
         lightTree: true,
         allowBulkMessaging: true,
@@ -1221,6 +1268,10 @@ function tabDetailsFromTSTMessage(message) {
 
 function handleTSTExternalMessage(message) {
   if (!message) return false;
+  if (message.type === "tab-clicked") {
+    const details = tabDetailsFromTSTMessage(message);
+    cancelPendingTabFocusRestoration(details && details.windowId);
+  }
   if (message.type === "try-fixup-tree-on-tab-moved" && suppressTSTMoveFixups) {
     return true;
   }
@@ -1282,7 +1333,10 @@ browser.tabs.onCreated.addListener(tab => {
 });
 browser.tabs.onRemoved.addListener(() => snapshotTabs("tab-removed"));
 browser.tabs.onMoved.addListener(() => snapshotTabs("tab-moved"));
-browser.tabs.onActivated.addListener(() => snapshotTabs("tab-activated"));
+browser.tabs.onActivated.addListener(activeInfo => {
+  restoreTabFocusAfterAttach(activeInfo);
+  snapshotTabs("tab-activated");
+});
 browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.title || changeInfo.status === "complete") {
     snapshotTabs("tab-updated");
@@ -1423,6 +1477,7 @@ browser.commands.onCommand.addListener(command => {
 });
 
 browser.windows.onRemoved.addListener(windowId => {
+  pendingTabFocusRestorations.delete(windowId);
   todayPlacementQueues.delete(windowId);
   if (windowId === popupWindowId) {
     popupWindowId = null;
