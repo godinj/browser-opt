@@ -71,6 +71,22 @@ const actions = [
     badge: "TST",
   },
   {
+    title: "Move yesterday's tabs to today",
+    description: "Move yesterday's date folders into today's folder in this window.",
+    type: "browser-opt:move-yesterday-to-today",
+    runningLabel: "Moving yesterday's tabs",
+    icon: "calendar",
+    badge: "TST",
+  },
+  {
+    title: "Move selected date folders to today",
+    description: "Move highlighted date folders, or the active date folder, into today's folder.",
+    type: "browser-opt:move-selected-dates-to-today",
+    runningLabel: "Moving selected folders",
+    icon: "calendar",
+    badge: "TST",
+  },
+  {
     title: "Clean up date groups",
     description: "Promote date folders and remove non-date category folders.",
     type: "browser-opt:cleanup-date-groups",

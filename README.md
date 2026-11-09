@@ -94,6 +94,12 @@ snapshot when Firefox starts, so a missed alarm is caught up the next time the
 extension runs. Automatic snapshots replace only their own rows; tabs saved with
 the **Archive selected folders** action remain in the archive.
 
+In Actions search, **Move yesterday's tabs to today** moves the contents of
+yesterday's Tree Style Tab date folders in the current window into today's
+folder. **Move selected date folders to today** does the same for highlighted
+date folder tabs, or the active date folder. Tab trees stay together, source
+folders remain open, and today's folder is created if needed.
+
 ## Web Terminal
 
 When `browser-opt` starts, it also starts a local `ttyd` server in the background if one is not already listening on `127.0.0.1:7681`.

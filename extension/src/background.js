@@ -220,11 +220,65 @@ function isDateTitle(title) {
 }
 
 function todayDateTitle() {
-  const now = new Date();
+  return localDateTitle(new Date());
+}
+
+function localDateTitle(now) {
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+async function moveDateFoldersToToday({ source = {}, yesterday = false } = {}) {
+  await registerToTST();
+  const activeTab = await activeTabInActionSource(source);
+  if (!activeTab) throw new Error("No active tab found.");
+  const items = await getTSTItemsByWindow(activeTab.windowId);
+  const today = todayDateTitle();
+  let folders;
+  if (yesterday) {
+    const date = new Date();
+    date.setDate(date.getDate() - 1);
+    const title = localDateTitle(date);
+    folders = items.filter(item => isTSTFolder(item) && item.tab && item.tab.title === title);
+    if (!folders.length) throw new Error(`No date folder for ${title} in this window.`);
+  } else {
+    const highlighted = await browser.tabs.query({ highlighted: true, windowId: activeTab.windowId });
+    const selectedIds = new Set((highlighted.length > 1 ? highlighted : [activeTab]).map(tab => tab.id));
+    folders = items.filter(item => selectedIds.has(item.id) && isTSTFolder(item) && isDateTitle(item.tab && item.tab.title));
+    if (!folders.length) throw new Error("Select or activate a dated Tree Style Tab folder first.");
+  }
+  if (folders.some(folder => folder.tab.title === today)) {
+    throw new Error("Today's folder cannot be a source. Select older date folders.");
+  }
+  const sourceIds = new Set(folders.map(folder => folder.id));
+  folders = folders.filter(folder => !(folder.ancestorTabIds || []).some(id => sourceIds.has(id)));
+  const existingToday = await findDateGroup(activeTab.windowId, today, items);
+  if (existingToday && folders.some(folder => collectDescendantTabIds(folder).includes(existingToday.id))) {
+    throw new Error("Today's folder is inside a source folder; move it out before continuing.");
+  }
+  const children = folders.flatMap(collectDirectChildren);
+  if (!children.length) return { message: "The selected date folders are empty." };
+
+  let destination = existingToday;
+  let moved = 0;
+  await suppressTSTMoveFixupsWhile(async () => {
+    if (!destination) {
+      const first = await browser.tabs.get(children[0]);
+      destination = await findOrCreateDateGroupForTab(first, today, items);
+      if (!destination) throw new Error("Could not create today's date folder.");
+      moved = 1;
+    }
+    for (const childId of children.slice(moved)) {
+      const child = await browser.tabs.get(childId);
+      guardActiveTabDuringAttach(child, destination.id);
+      await attachTabToParent(childId, destination.id);
+      moved += 1;
+    }
+  });
+  await snapshotTabs("move-date-folders-to-today");
+  return { message: `Moved ${moved} ${moved === 1 ? "tree" : "trees"} into ${today}. Source folders remain open.` };
 }
 
 function normalizeUrlForMatch(input) {
@@ -1407,6 +1461,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
   if (message.type === "browser-opt:cleanup-date-groups") {
     return cleanupDateGroupsAndCategories();
+  }
+  if (message.type === "browser-opt:move-yesterday-to-today") {
+    return moveDateFoldersToToday({ source: lastPopupSource, yesterday: true });
+  }
+  if (message.type === "browser-opt:move-selected-dates-to-today") {
+    return moveDateFoldersToToday({ source: lastPopupSource });
   }
   if (message.type === "browser-opt:archive-current-folder") {
     return archiveCurrentFolder({ source: lastPopupSource });
